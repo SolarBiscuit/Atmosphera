@@ -25,8 +25,7 @@ final class SunProbe {
     private static final int[] PBOS = new int[RING];
     private static final long[] FENCES = new long[RING];
     private static int next;
-    private static final float INTERVAL = 0.1f;
-    private static float sinceProbe = INTERVAL;
+    private static float sinceProbe = 1f;
     private static float sinceSample;
     private static float sunCover;
     private static float moonCover;
@@ -44,13 +43,14 @@ final class SunProbe {
 
     /**
      * Binds the 2x1 target for the probe draw; false when it could not be made, or in the frames between probes
-     * (0.2.3: ten probes a second whatever the frame rate; the cover is smoothed over 0.3 s anyway). No GL state query: the
+     * (0.2.3: ten probes a second whatever the frame rate, four on LOW since 0.2.4; the cover is smoothed over 0.3 s
+     * anyway). No GL state query: the
      * caller's state snapshot puts the framebuffer back (0.2.2; the per-frame query and readback showed as 0.15-0.23 ms
      * in the pass at 1440p).
      */
-    static boolean begin() {
+    static boolean begin(float interval) {
         collect();
-        if (sinceProbe < INTERVAL) {
+        if (sinceProbe < interval) {
             return false;
         }
         sinceProbe = 0f;

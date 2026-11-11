@@ -8,7 +8,10 @@ import com.solarbiscuit.atmosphera.lib.options.ChangeTier;
 public final class StratosConfig {
     /** Cost tier of the cloud march. Divisor: the march runs at 1/divisor of the screen's width and height. */
     public enum Quality {
-        /** Flat decks plus a coarse 2.5D low deck, no history: for integrated GPUs. */
+        /**
+         * Flat decks plus a coarse low deck, no history: for integrated GPUs. (1/6 of the resolution was tried in 0.2.5
+         * and measured no cheaper than 1/4: LOW's cost is per-pass overhead, not pixels.)
+         */
         LOW(4, 6, 1, false, false),
         /** Volumetric low deck at a quarter of the resolution, temporal accumulation (default). */
         MEDIUM(4, 12, 3, true, true),

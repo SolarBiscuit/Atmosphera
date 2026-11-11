@@ -318,6 +318,11 @@ final class CloudGlsl {
                 }
                 bool far = seg.x > STRATOS_NEAR_BAND;
                 int steps = far ? max(3, u_Info.z / 3) : u_Info.z;
+                // 0.2.5: from above the deck the rays cross it at a slant and most of them meet the deck's sunlit
+                // top first; two thirds of the steps are enough there (flying over the clouds cost the most).
+                if (u_Camera.x > u_Deck.x + u_Deck.y) {
+                    steps = max(6, steps * 2 / 3);
+                }
                 float dt = (seg.y - seg.x) / float(steps);
                 float lod = far ? 2.0 : clamp(log2(seg.x / 500.0 + 1.0), 0.0, 2.0);
                 bool detail = u_Flags.x > 0.5 && !far;
@@ -576,43 +581,59 @@ final class CloudGlsl {
             }
 
             void main() {
-                float depth = texture(u_Depth, v_Uv).r;
-                float dist = u_Params.x;
-                if (depth < 1.0) {
-                    vec4 rel = u_InvViewProj * vec4(v_Uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-                    dist = min(dist, length(rel.xyz / rel.w));
-                }
                 ivec2 size = textureSize(u_Clouds, 0);
                 vec2 st = v_Uv * vec2(size) - 0.5;
                 ivec2 i0 = ivec2(floor(st));
                 vec2 f = fract(st);
-                vec4 sum = vec4(0.0);
-                float wsum = 0.0;
-                vec4 nearest = vec4(0.0, 0.0, 0.0, 1.0);
-                float nearestErr = 1e9;
-                float errs[4];
-                for (int k = 0; k < 4; k++) {
-                    ivec2 p = clamp(i0 + ivec2(k & 1, k >> 1), ivec2(0), size - 1);
-                    errs[k] = abs(log(max(texelFetch(u_LowDepth, p, 0).y, 0.05)) - log(max(dist, 0.05)));
-                    nearestErr = min(nearestErr, errs[k]);
+                ivec2 p00 = clamp(i0, ivec2(0), size - 1);
+                ivec2 p10 = clamp(i0 + ivec2(1, 0), ivec2(0), size - 1);
+                ivec2 p01 = clamp(i0 + ivec2(0, 1), ivec2(0), size - 1);
+                ivec2 p11 = clamp(i0 + ivec2(1, 1), ivec2(0), size - 1);
+                bool debug = u_Params.y > 0.5;
+                // 0.2.4 fast path 1 (one bilinear fetch since 0.2.5): no cloud in any of the four taps (most terrain,
+                // clear sky): nothing to blend.
+                vec4 bilinear = textureLod(u_Clouds, v_Uv, 0.0);
+                if (!debug && bilinear.a > 0.998 && max(bilinear.r, max(bilinear.g, bilinear.b)) < 0.002) {
+                    discard;
                 }
-                for (int k = 0; k < 4; k++) {
-                    ivec2 o = ivec2(k & 1, k >> 1);
-                    ivec2 p = clamp(i0 + o, ivec2(0), size - 1);
-                    float wb = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+                vec4 limits = vec4(texelFetch(u_LowDepth, p00, 0).y, texelFetch(u_LowDepth, p10, 0).y,
+                        texelFetch(u_LowDepth, p01, 0).y, texelFetch(u_LowDepth, p11, 0).y);
+                float lo = min(min(limits.x, limits.y), min(limits.z, limits.w));
+                float hi = max(max(limits.x, limits.y), max(limits.z, limits.w));
+                vec4 c;
+                if (hi <= lo * 1.02 + 0.5) {
+                    // 0.2.4 fast path 2: the four taps march to the same distance, so there is no silhouette here and
+                    // the plain bilinear blend is exact enough: no full-resolution depth, no weights.
+                    c = bilinear;
+                } else {
+                    vec4 c00 = texelFetch(u_Clouds, p00, 0);
+                    vec4 c10 = texelFetch(u_Clouds, p10, 0);
+                    vec4 c01 = texelFetch(u_Clouds, p01, 0);
+                    vec4 c11 = texelFetch(u_Clouds, p11, 0);
+                    // An edge (terrain against sky, LOD tree lines): weight the taps by how well their march limit
+                    // matches this pixel's own distance.
+                    float depth = texture(u_Depth, v_Uv).r;
+                    float dist = u_Params.x;
+                    if (depth < 1.0) {
+                        vec4 rel = u_InvViewProj * vec4(v_Uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
+                        dist = min(dist, length(rel.xyz / rel.w));
+                    }
+                    float ld = log(max(dist, 0.05));
+                    vec4 errs = abs(log(max(limits, vec4(0.05))) - vec4(ld));
+                    float nearestErr = min(min(errs.x, errs.y), min(errs.z, errs.w));
                     // 0.1.5: relative to the best-matching tap, and much sharper. exp(-6 err) alone left a far LOD tree
                     // tap (2000 blocks against the 4250 block sky limit) at about 4% weight, so sky pixels mostly over a
                     // tree texel took a quarter of their clouds from it: a thin clear rim along distant tree lines.
-                    float w = wb * exp(-(errs[k] - nearestErr) * 30.0);
-                    vec4 c = texelFetch(u_Clouds, p, 0);
-                    sum += c * w;
-                    wsum += w;
-                    if (errs[k] == nearestErr) {
-                        nearest = c;
+                    vec4 wb = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+                    vec4 w = wb * exp(-(errs - vec4(nearestErr)) * 30.0);
+                    float wsum = w.x + w.y + w.z + w.w;
+                    if (wsum > 1e-4) {
+                        c = (c00 * w.x + c10 * w.y + c01 * w.z + c11 * w.w) / wsum;
+                    } else {
+                        c = errs.x == nearestErr ? c00 : errs.y == nearestErr ? c10 : errs.z == nearestErr ? c01 : c11;
                     }
                 }
-                vec4 c = wsum > 1e-4 ? sum / wsum : nearest;
-                if (u_Params.y > 0.5) {
+                if (debug) {
                     fragColor = vec4(c.rgb, 0.0);
                     return;
                 }
@@ -654,7 +675,8 @@ final class CloudGlsl {
                     t += dt;
                 }
                 float trans = exp(-od * u_Deck.w);
-                if (u_Layers.z > 0.0 && u_Block.x == 0.0) {
+                // u_Info.w: 0 on LOW (0.2.4), where the thin decks' faint shadows are left out.
+                if (u_Info.w > 0 && u_Layers.z > 0.0 && u_Block.x == 0.0) {
                     vec3 pm = p0 + sun * ((u_Layers.x - u_Probe1.w) / sun.y);
                     vec2 uv;
                     vec2 region;
@@ -662,7 +684,7 @@ final class CloudGlsl {
                     float albedo;
                     trans *= exp(-stratos_alto(pm.xz, 2.0, uv, region, forms, albedo) * 1.4);
                 }
-                if (u_Layers.w > 0.0) {
+                if (u_Info.w > 0 && u_Layers.w > 0.0) {
                     vec3 ph = p0 + sun * ((u_Layers.y - u_Probe1.w) / sun.y);
                     trans *= exp(-stratos_cirrus(ph.xz, 2.0) * 0.45);
                 }

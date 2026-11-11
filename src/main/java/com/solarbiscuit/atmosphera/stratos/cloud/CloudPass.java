@@ -178,7 +178,8 @@ public final class CloudPass {
         boolean temporal = quality.temporal && StratosConfig.debug.get() == 0;
         if (low == null || lowDivisor != divisor) {
             releaseTargets();
-            low = RenderTargets.create("Stratos clouds", divisor, GL30C.GL_RGBA16F, false);
+            // Linear filtering (0.2.5): the composite's fast path takes one bilinear fetch instead of four.
+            low = RenderTargets.create("Stratos clouds", divisor, GL30C.GL_RGBA16F, true);
             lowDepth = RenderTargets.create("Stratos cloud depth", divisor, GL30C.GL_RG16F, false);
             lowDivisor = divisor;
         }
@@ -270,7 +271,7 @@ public final class CloudPass {
             bind(14, GL12C.GL_TEXTURE_3D, CloudNoise.detail());
             bind(15, GL11C.GL_TEXTURE_2D, CloudNoise.weather());
             GpuTimers.begin("stratos_probe");
-            if (SunProbe.begin()) {
+            if (SunProbe.begin(quality == StratosConfig.Quality.LOW ? 0.25f : 0.1f)) {
                 GL20C.glUseProgram(probe.id());
                 setCommon(probe, ctx, camera, quality, frame, false, false, stack);
                 GL20C.glUniform4f(probe.u(Program.PROBE0), SunSource.dirX(), SunSource.dirY(), SunSource.dirZ(), 0f);
@@ -289,7 +290,7 @@ public final class CloudPass {
                     GL20C.glUseProgram(shadow.id());
                     setCommon(shadow, ctx, camera, quality, frame, false, false, stack);
                     GL20C.glUniform4i(shadow.u(Program.INFO), lowDivisor, (int) (frame & 0xFFFF),
-                            quality == StratosConfig.Quality.LOW ? 3 : 6, 1);
+                            quality == StratosConfig.Quality.LOW ? 3 : 6, quality == StratosConfig.Quality.LOW ? 0 : 1);
                     GL20C.glUniform4f(shadow.u(Program.PROBE0), SunSource.dirX(), SunSource.dirY(), SunSource.dirZ(), 0f);
                     GL20C.glUniform4f(shadow.u(Program.PROBE1), SHADOW_REL[0], SHADOW_REL[1], CloudShadow.SIZE_BLOCKS, planeY);
                     GlslPrograms.drawFullscreen();
