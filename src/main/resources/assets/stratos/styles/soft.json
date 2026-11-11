@@ -1,6 +1,6 @@
 {
     "_comment": "Soft: rounder, softer-edged clouds with less erosion; a little cheaper (the detail noise is skipped).",
-    "coverage": 0.40,
+    "coverage": 0.95,
     "extinction": 0.035,
     "softness": 0.24,
     "detail": 0.0,

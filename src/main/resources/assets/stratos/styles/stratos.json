@@ -1,6 +1,6 @@
 {
     "_comment": "Stratos (default): realistic cumulus fields. Sizes in blocks. See CloudStyle.java for every key; keys left out keep the built-in values.",
-    "coverage": 0.42,
+    "coverage": 1.0,
     "extinction": 0.055,
     "softness": 0.14,
     "detail": 0.35,

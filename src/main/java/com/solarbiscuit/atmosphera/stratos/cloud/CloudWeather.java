@@ -87,15 +87,17 @@ public final class CloudWeather {
         CloudStyle style = CloudStyle.current();
         float amount = StratosConfig.coverage.get().floatValue();
         float clear = style.coverage() * amount * (1f - 0.55f * dryness);
-        coverage = clamp01(clear + rain * (0.88f - clear) + thunder * 0.06f);
+        coverage = clamp01(clear + rain * (0.95f - clear) + thunder * 0.03f);
         stratiform = clamp01(rain * (1f - thunder) * 0.9f + coldness * 0.35f);
         towers = clamp01(thunder * 1.2f);
         float maxDepth = StratosConfig.lowThickness.get();
         base = StratosConfig.lowBase.get() - 25f * rain;
         // Fair-weather cumulus use part of the deck, sheets less, storm towers all of it.
-        thickness = maxDepth * (0.62f + 0.38f * towers - 0.25f * stratiform);
+        // Nimbostratus in rain is thick too (0.1.1: was thinned, which left a featureless film).
+        thickness = maxDepth * (0.62f + 0.38f * towers + 0.1f * rain);
         darken = style.rainDarken() * clamp01(rain * 0.8f + thunder * 0.4f);
-        midCover = StratosConfig.midDeck.get() ? clamp01(0.55f - 0.3f * dryness + 0.3f * rain) : 0f;
+        // In rain the altocumulus melts into a thin veil (the shader blends it by the stratiform weight).
+        midCover = StratosConfig.midDeck.get() ? clamp01(0.5f - 0.3f * dryness) * (1f - 0.3f * rain) : 0f;
         highCover = StratosConfig.highDeck.get() ? clamp01(0.6f + 0.2f * coldness - 0.4f * rain) : 0f;
         hazeDistance = 3200f - 2100f * rain;
 

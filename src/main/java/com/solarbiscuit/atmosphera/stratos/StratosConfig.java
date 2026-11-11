@@ -78,11 +78,11 @@ public final class StratosConfig {
                         + "of the resolution, smoothed over frames. HIGH: half resolution, more detail.");
         style = config.choice("style", Style.STRATOS, ChangeTier.LIVE, "Cloud style",
                 "STRATOS: realistic. SOFT: softer and rounder, a little cheaper. BLOCKY: vanilla-like blocks of cloud.");
-        coverage = config.percent("coverage", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Cloud amount",
-                "How much of the sky is cloudy in clear weather (100% = the style's own amount). Rain and storms add "
-                        + "more.");
-        density = config.percent("density", 1.0, 0.25, 2.0, ChangeTier.LIVE, "Cloud thickness",
-                "How opaque the clouds are.");
+        coverage = config.percent("coverage", 0.5, 0.0, 1.0, ChangeTier.LIVE, "Cloud amount",
+                "How much of the sky is cloudy in clear weather: 50% gives scattered fair-weather clouds, 100% an "
+                        + "unbroken layer. Rain and storms add more.");
+        density = config.percent("density", 0.7, 0.2, 2.0, ChangeTier.LIVE, "Cloud thickness",
+                "How opaque the clouds are (70% by default).");
         weather = config.toggle("follow_weather", true, ChangeTier.LIVE, "Clouds follow the weather",
                 "Rain turns the sky into a low grey sheet, thunder builds towering storm clouds, dry biomes have fewer "
                         + "clouds and cold ones flatter ones. Off: always fair-weather clouds.");

@@ -193,6 +193,7 @@ public final class CloudPass {
             bind(13, GL12C.GL_TEXTURE_3D, CloudNoise.shape());
             bind(14, GL12C.GL_TEXTURE_3D, CloudNoise.detail());
             bind(15, GL11C.GL_TEXTURE_2D, CloudNoise.weather());
+            bind(10, GL11C.GL_TEXTURE_2D, CloudNoise.layers());
             GL20C.glUseProgram(march.id());
             setCommon(march, ctx, camera, quality, frame, temporal, dhTexture != 0, stack);
             GlslPrograms.drawFullscreen();
@@ -256,7 +257,7 @@ public final class CloudPass {
                 SunProbe.end();
             }
         } finally {
-            for (int unit = 11; unit <= 15; unit++) {
+            for (int unit = 10; unit <= 15; unit++) {
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE0 + unit);
                 GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
                 GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, 0);
@@ -302,6 +303,7 @@ public final class CloudPass {
         GL20C.glUniform1i(p.u(Program.DETAIL), 14);
         GL20C.glUniform1i(p.u(Program.WEATHER), 15);
         GL20C.glUniform1i(p.u(Program.DH), 11);
+        GL20C.glUniform1i(p.u(Program.LAYER_TEX), 10);
         GL20C.glUniformMatrix4fv(p.u(Program.INV_VIEW_PROJ), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
         GL20C.glUniform4i(p.u(Program.INFO), lowDivisor, (int) (frame & 0xFFFF), quality.steps, quality.lightSteps);
         boolean detail = quality.detail && style.detail() > 0f;
@@ -310,7 +312,10 @@ public final class CloudPass {
         GL20C.glUniform4f(p.u(Program.CAMERA), (float) camera.y, StratosConfig.farDistance.get(),
                 radius > 0 ? 0.5f / radius : 0f, CloudWeather.hazeDistance);
         LOOK.set(mc.gameRenderer.getMainCamera().getLookVector());
-        GL20C.glUniform4f(p.u(Program.FORWARD), LOOK.x, LOOK.y, LOOK.z, 0f);
+        // w: the angle one low-resolution pixel covers (for the thin layers' mip level): 2 tan(fovY / 2) / lines.
+        float lines = low != null && low.height() > 0 ? low.height() : 360f;
+        float pixelAngle = 2f / (Math.max(ctx.projection().m11(), 1e-3f) * lines);
+        GL20C.glUniform4f(p.u(Program.FORWARD), LOOK.x, LOOK.y, LOOK.z, pixelAngle);
 
         boolean blocky = style.blockCell() > 0f;
         float thickness = blocky ? style.blockDepth() : CloudWeather.thickness;
@@ -452,11 +457,11 @@ public final class CloudPass {
         static final String[] COMMON = {"u_Depth", "u_Shape", "u_Detail", "u_Weather", "atmos_DhDepth", "u_InvViewProj",
                 "u_Info", "u_Flags", "u_Camera", "u_Forward", "u_Deck", "u_Type", "u_Layers", "u_ShapeOff",
                 "u_WeatherOff", "u_Scale", "u_Block", "u_LightDir", "u_LightCol", "u_AmbTop", "u_AmbBottom", "u_Haze",
-                "u_Tint", "u_Probe0", "u_Probe1"};
+                "u_Tint", "u_Probe0", "u_Probe1", "u_LayerTex"};
         static final int DEPTH = 0, SHAPE = 1, DETAIL = 2, WEATHER = 3, DH = 4, INV_VIEW_PROJ = 5, INFO = 6, FLAGS = 7,
                 CAMERA = 8, FORWARD = 9, DECK = 10, TYPE = 11, LAYERS = 12, SHAPE_OFF = 13, WEATHER_OFF = 14, SCALE = 15,
                 BLOCK = 16, LIGHT_DIR = 17, LIGHT_COL = 18, AMB_TOP = 19, AMB_BOTTOM = 20, HAZE = 21, TINT = 22,
-                PROBE0 = 23, PROBE1 = 24;
+                PROBE0 = 23, PROBE1 = 24, LAYER_TEX = 25;
 
         /** Programs built from {@link CloudGlsl#COMMON} locate the common names; others name their own. */
         static Program of(String name, String fragment, String... uniforms) {

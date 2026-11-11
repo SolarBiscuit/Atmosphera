@@ -18,24 +18,30 @@ import java.util.stream.IntStream;
  * <ul>
  *   <li>shape, 64³ RGBA8: R Perlin-Worley (billowy base), G/B/A inverted Worley fBm at three frequencies;</li>
  *   <li>detail, 32³ R8: higher-frequency Worley fBm that erodes the edges;</li>
- *   <li>weather, 256² RGBA8: R coverage (Perlin fBm), G cloud-type variation, B cirrus fibres, A altocumulus cells.</li>
+ *   <li>weather, 256² RGBA8: R coverage (Perlin fBm), G cloud-type variation;</li>
+ *   <li>layers, 512² RGBA8 (0.1.1): R cirrus fibres, G cirrus patches, B altocumulus cells, A a slow field for the
+ *       altocumulus rows and patches. All smooth and unthresholded: the shader thresholds after filtering, so edges
+ *       stay round at every distance (thresholds baked into texels showed up as squares).</li>
  * </ul>
- * About 1.2 MB of texture memory. Generated once on a background thread when first asked for (well under a second on a
+ * About 2.5 MB of texture memory. Generated once on a background thread when first asked for (well under a second on a
  * desktop CPU, in parallel), then uploaded on the render thread.
  */
 public final class CloudNoise {
     static final int SHAPE = 64;
     static final int DETAIL = 32;
     static final int WEATHER = 256;
+    static final int LAYERS = 512;
     private static final int SEED = 0x5715A705;
 
     private static volatile ByteBuffer shapeData;
     private static volatile ByteBuffer detailData;
     private static volatile ByteBuffer weatherData;
+    private static volatile ByteBuffer layersData;
     private static volatile boolean generating;
     private static int shapeTex;
     private static int detailTex;
     private static int weatherTex;
+    private static int layersTex;
 
     private CloudNoise() {
     }
@@ -71,13 +77,18 @@ public final class CloudNoise {
         return weatherTex;
     }
 
+    public static int layers() {
+        return layersTex;
+    }
+
     /** Frees the GL textures (the CPU data was freed after upload). The next {@link #ready()} generates again. */
     public static void release() {
         if (shapeTex != 0) {
             GpuResources.deleteTexture(shapeTex);
             GpuResources.deleteTexture(detailTex);
             GpuResources.deleteTexture(weatherTex);
-            shapeTex = detailTex = weatherTex = 0;
+            GpuResources.deleteTexture(layersTex);
+            shapeTex = detailTex = weatherTex = layersTex = 0;
         }
     }
 
@@ -124,22 +135,38 @@ public final class CloudNoise {
                     float cov = clamp01((perlinFbm(u, v, 0f, 4, 5) - 0.5f) * 1.6f + 0.5f);
                     // Type: slow variation between flatter and taller clouds.
                     float type = clamp01(perlinFbm(u + 0.37f, v + 0.11f, 0.5f, 3, 2) * 1.2f - 0.1f);
-                    // Cirrus: fibres, long along one axis and fine across it, with a gentle warp.
-                    float warp = perlinFbm(u, v, 0.25f, 4, 2) - 0.5f;
-                    float fibre = perlinFbmAniso(u + warp * 0.08f, v, 8, 64, 3);
-                    float cirrus = clamp01((fibre - 0.45f) * 2.2f) * clamp01(perlinFbm(u, v, 0.75f, 2, 2) * 1.6f - 0.3f);
-                    // Altocumulus: small rounded cells, grouped in patches.
-                    float cells = worley2(u, v, 48);
-                    float patch = clamp01(perlinFbm(u + 0.61f, v + 0.29f, 0.9f, 4, 2) * 1.8f - 0.55f);
                     int i = (y * WEATHER + x) * 4;
                     weather.put(i, toByte(cov));
                     weather.put(i + 1, toByte(type));
-                    weather.put(i + 2, toByte(cirrus));
-                    weather.put(i + 3, toByte(clamp01(cells * 1.25f - 0.2f) * patch));
+                    weather.put(i + 2, (byte) 0);
+                    weather.put(i + 3, (byte) 0);
+                }
+            });
+            ByteBuffer layers = MemoryUtil.memAlloc(LAYERS * LAYERS * 4);
+            IntStream.range(0, LAYERS).parallel().forEach(y -> {
+                for (int x = 0; x < LAYERS; x++) {
+                    float u = (x + 0.5f) / LAYERS;
+                    float v = (y + 0.5f) / LAYERS;
+                    // Cirrus fibres: long along u, fine across v, bent by a slow two-axis warp (hooks and curls).
+                    float wu = perlinFbm(u, v, 0.25f, 3, 2) - 0.5f;
+                    float wv = perlinFbm(u + 0.43f, v + 0.17f, 0.35f, 3, 2) - 0.5f;
+                    float fibre = perlinFbmAniso(u + wu * 0.06f, v + wv * 0.05f, 4, 32, 4);
+                    // Where cirrus forms: broad patches.
+                    float cirrusField = perlinFbm(u + 0.21f, v + 0.73f, 0.6f, 2, 3);
+                    // Altocumulus: small rounded cells (inverted distance to the nearest feature point).
+                    float cells = worley2(u, v, 48);
+                    // A slow field: bends the altocumulus rows, and (at a larger scale) groups them in patches.
+                    float slow = perlinFbm(u + 0.61f, v + 0.29f, 0.9f, 4, 3);
+                    int i = (y * LAYERS + x) * 4;
+                    layers.put(i, toByte((fibre - 0.5f) * 1.5f + 0.5f));
+                    layers.put(i + 1, toByte((cirrusField - 0.5f) * 1.4f + 0.5f));
+                    layers.put(i + 2, toByte(cells));
+                    layers.put(i + 3, toByte((slow - 0.5f) * 1.5f + 0.5f));
                 }
             });
             detailData = detail;
             weatherData = weather;
+            layersData = layers;
             shapeData = shape; // last: ready() keys on it
             Stratos.LOGGER.info("Cloud noise generated in {} ms", (System.nanoTime() - start) / 1_000_000);
         } catch (Throwable t) {
@@ -151,6 +178,7 @@ public final class CloudNoise {
         ByteBuffer shape = shapeData;
         ByteBuffer detail = detailData;
         ByteBuffer weather = weatherData;
+        ByteBuffer layers = layersData;
         int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
         GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
         Uploads.begin(1);
@@ -165,13 +193,22 @@ public final class CloudNoise {
             GL30C.glGenerateMipmap(GL11C.GL_TEXTURE_2D);
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
             GpuResources.textureBytes(weatherTex, WEATHER * WEATHER * 4L * 4 / 3);
+            layersTex = GpuResources.texture("Stratos cloud layers");
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, layersTex);
+            GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL11C.GL_RGBA8, LAYERS, LAYERS, 0, GL11C.GL_RGBA,
+                    GL11C.GL_UNSIGNED_BYTE, layers);
+            params(GL11C.GL_TEXTURE_2D);
+            GL30C.glGenerateMipmap(GL11C.GL_TEXTURE_2D);
+            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
+            GpuResources.textureBytes(layersTex, LAYERS * LAYERS * 4L * 4 / 3);
         } finally {
             Uploads.end();
             GL13C.glActiveTexture(previousUnit);
             MemoryUtil.memFree(shape);
             MemoryUtil.memFree(detail);
             MemoryUtil.memFree(weather);
-            shapeData = detailData = weatherData = null;
+            MemoryUtil.memFree(layers);
+            shapeData = detailData = weatherData = layersData = null;
             generating = false;
         }
     }

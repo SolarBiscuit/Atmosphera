@@ -19,7 +19,7 @@ import java.util.Optional;
  * One look preset ({@code assets/stratos/styles/<style>.json}). Every value is a live shader uniform, so switching
  * styles costs nothing. Keys a file leaves out keep {@link #FALLBACK}'s value; sizes are in blocks.
  *
- * @param coverage    share of the sky covered in clear weather, before the coverage option (0..1)
+ * @param coverage    mean coverage of the low deck at 100% cloud amount (the amount option scales it)
  * @param extinction  optical depth per block of fully dense cloud
  * @param softness    width of the coverage edge: larger is softer, rounder clouds
  * @param detail      how strongly the detail noise erodes the edges (0 = smooth blobs)
@@ -36,7 +36,7 @@ import java.util.Optional;
 public record CloudStyle(float coverage, float extinction, float softness, float detail, float shapeSize,
                          float detailSize, float weatherSize, float forward, float ambient, float powder,
                          float rainDarken, float blockCell, float blockDepth) {
-    public static final CloudStyle FALLBACK = new CloudStyle(0.42f, 0.055f, 0.14f, 0.35f, 360f, 72f, 6144f, 0.75f,
+    public static final CloudStyle FALLBACK = new CloudStyle(1.0f, 0.055f, 0.14f, 0.35f, 360f, 72f, 6144f, 0.75f,
             0.85f, 0.6f, 0.55f, 0f, 0f);
 
     private static volatile Map<StratosConfig.Style, CloudStyle> styles = new EnumMap<>(StratosConfig.Style.class);

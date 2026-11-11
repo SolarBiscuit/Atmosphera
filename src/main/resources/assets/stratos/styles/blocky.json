@@ -1,6 +1,6 @@
 {
     "_comment": "Blocky: vanilla-like 12-block cells of cloud in a thin layer at the low cloud base, lit like Stratos clouds.",
-    "coverage": 0.36,
+    "coverage": 0.9,
     "extinction": 0.09,
     "softness": 0.02,
     "detail": 0.0,
