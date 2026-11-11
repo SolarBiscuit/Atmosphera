@@ -62,6 +62,9 @@ public final class StratosConfig {
     public static AtmosOption<Boolean> followVanilla;
     public static AtmosOption<Boolean> dhDepth;
     public static AtmosOption<Integer> debug;
+    public static AtmosConfig.FeatureSwitch shadows;
+    public static AtmosOption<Boolean> marchNear;
+    public static AtmosOption<Boolean> marchThirdOctave;
 
     private StratosConfig() {
     }
@@ -124,6 +127,17 @@ public final class StratosConfig {
                 "Clouds stop at Distant Horizons' LOD terrain (needs Distant Horizons).");
         debug = config.slider("debug", 0, 0, 3, 1, ChangeTier.LIVE, "Debug view",
                 "0 off, 1 transmittance, 2 march limit, 3 coverage. For testing.");
+        config.section("shade", "Cloud shadows (0.2.0).");
+        shadows = config.featureSwitch("shadows", true, "Cloud shadows",
+                "Clouds shade the ground, water and distant terrain, and light pours through their gaps (with Lumis: "
+                        + "on terrain, LODs, entities and in the light shafts).");
+
+        config.section("march", "Cloud march tuning (0.2.0). Each item is measured on its own before it becomes a default.");
+        marchNear = config.toggle("near_disparity", false, ChangeTier.LIVE, "Near steps in 1/distance",
+                "With the camera in or just under the clouds, space the near steps evenly in 1/distance, so the first "
+                        + "ones are close to the camera.");
+        marchThirdOctave = config.toggle("third_octave", false, ChangeTier.LIVE, "Third scattering octave",
+                "A softer third light-scattering term that lifts deep cloud cores out of grey.");
         config.register();
     }
 }

@@ -47,6 +47,9 @@ public final class CloudPass {
     private static final int CAP_LINES_HIGH = 720;
 
     private static AtmosFeature feature;
+    private static AtmosFeature shadowFeature;
+    private static Program shadow;
+    private static final float[] SHADOW_REL = new float[2];
     private static Program march;
     private static Program resolve;
     private static Program composite;
@@ -77,6 +80,13 @@ public final class CloudPass {
                 .switchedBy(StratosConfig.clouds)
                 .register();
         PostPasses.register(feature, PostPasses.Stage.CLOUDS, 0, "stratos_clouds", CloudPass::render);
+        // Cloud shadows (0.2.0): drawn in the cloud pass; a feature of their own so they can be switched and so the
+        // overlap guard can see them.
+        shadowFeature = AtmosFeature.builder(Stratos.MOD_ID, "cloud_shadows")
+                .provides(Capability.CLOUD_SHADOWS)
+                .uses(AtmosFeature.Uses.WORLD_PASS)
+                .switchedBy(StratosConfig.shadows)
+                .register();
         CloudCover.register(feature, new CloudCover.Provider() {
             @Override
             public float sunCover() {
@@ -97,6 +107,17 @@ public final class CloudPass {
             public int transmittanceTexture() {
                 // Only this frame's or last frame's result: never a texture from a frame long gone.
                 return AtmosClient.frame() - outputFrame <= 1 ? output : 0;
+            }
+
+            @Override
+            public int shadowTexture() {
+                return shadowFeature.isActive() && drawing() ? CloudShadow.texture(AtmosClient.frame()) : 0;
+            }
+
+            @Override
+            public boolean shadowParams(float[] out) {
+                Vec3 camera = Minecraft.getInstance().gameRenderer.getMainCamera().getPosition();
+                return CloudShadow.params(out, camera.x, camera.z);
             }
         });
     }
@@ -248,6 +269,7 @@ public final class CloudPass {
             bind(13, GL12C.GL_TEXTURE_3D, CloudNoise.shape());
             bind(14, GL12C.GL_TEXTURE_3D, CloudNoise.detail());
             bind(15, GL11C.GL_TEXTURE_2D, CloudNoise.weather());
+            GpuTimers.begin("stratos_probe");
             if (SunProbe.begin()) {
                 GL20C.glUseProgram(probe.id());
                 setCommon(probe, ctx, camera, quality, frame, false, false, stack);
@@ -255,6 +277,25 @@ public final class CloudPass {
                 GL20C.glUniform4f(probe.u(Program.PROBE1), -SunSource.dirX(), -SunSource.dirY(), -SunSource.dirZ(), 0f);
                 GlslPrograms.drawFullscreen();
                 SunProbe.end();
+            }
+            GpuTimers.end("stratos_probe");
+
+            // 5. Cloud shadow map (0.2.0), read by terrain, LODs and Lumis through the lib's atmos_cloudShadow.
+            if (shadowFeature.isActive()) {
+                GpuTimers.begin("stratos_shadow");
+                int res = quality == StratosConfig.Quality.HIGH ? 512 : 256;
+                float planeY = CloudWeather.base + 0.4f * CloudWeather.thickness;
+                if (CloudShadow.begin(res, camera.x, camera.z, planeY, SHADOW_REL)) {
+                    GL20C.glUseProgram(shadow.id());
+                    setCommon(shadow, ctx, camera, quality, frame, false, false, stack);
+                    GL20C.glUniform4i(shadow.u(Program.INFO), lowDivisor, (int) (frame & 0xFFFF),
+                            quality == StratosConfig.Quality.LOW ? 3 : 6, 1);
+                    GL20C.glUniform4f(shadow.u(Program.PROBE0), SunSource.dirX(), SunSource.dirY(), SunSource.dirZ(), 0f);
+                    GL20C.glUniform4f(shadow.u(Program.PROBE1), SHADOW_REL[0], SHADOW_REL[1], CloudShadow.SIZE_BLOCKS, planeY);
+                    GlslPrograms.drawFullscreen();
+                    CloudShadow.end(frame);
+                }
+                GpuTimers.end("stratos_shadow");
             }
         } finally {
             for (int unit = 10; unit <= 15; unit++) {
@@ -291,38 +332,51 @@ public final class CloudPass {
         return true;
     }
 
-    private static void setCommon(Program p, PostPasses.Context ctx, Vec3 camera, StratosConfig.Quality quality,
-                                  long frame, boolean temporal, boolean dh, MemoryStack stack) {
+    /** The per-frame uniform values (0.2.0: computed once per frame, then only uploaded per program). */
+    private static final float[] V = new float[64];
+    private static final int V_CAMERA = 0, V_FORWARD = 4, V_DECK = 8, V_TYPE = 12, V_LAYERS = 16, V_SHAPE_OFF = 20,
+            V_WEATHER_OFF = 24, V_SCALE = 28, V_BLOCK = 32, V_LIGHT_DIR = 36, V_LIGHT_COL = 40, V_AMB_TOP = 44,
+            V_AMB_BOTTOM = 48, V_HAZE = 52, V_TINT = 56, V_MARCH = 60;
+    private static final int[] V_SLOTS = {Program.CAMERA, Program.FORWARD, Program.DECK, Program.TYPE, Program.LAYERS,
+            Program.SHAPE_OFF, Program.WEATHER_OFF, Program.SCALE, Program.BLOCK, Program.LIGHT_DIR, Program.LIGHT_COL,
+            Program.AMB_TOP, Program.AMB_BOTTOM, Program.HAZE, Program.TINT, Program.MARCH};
+    private static long preparedFrame = -1;
+    private static boolean preparedDetail;
+
+    private static void put(int at, float x, float y, float z, float w) {
+        V[at] = x;
+        V[at + 1] = y;
+        V[at + 2] = z;
+        V[at + 3] = w;
+    }
+
+    /**
+     * Everything the cloud programs share for this frame, computed once (0.2.0). Until 0.1.6 each program (march,
+     * probe) recomputed it, including the game's sky and cloud colours (biome blends that allocate), which showed as
+     * about 0.17 ms of idle GPU time inside the pass at 1440p.
+     */
+    private static void prepare(PostPasses.Context ctx, Vec3 camera, StratosConfig.Quality quality, long frame) {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         CloudStyle style = CloudStyle.current();
         float partial = ctx.partialTick();
+        preparedFrame = frame;
+        preparedDetail = quality.detail && style.detail() > 0f;
 
-        GL20C.glUniform1i(p.u(Program.DEPTH), 12);
-        GL20C.glUniform1i(p.u(Program.SHAPE), 13);
-        GL20C.glUniform1i(p.u(Program.DETAIL), 14);
-        GL20C.glUniform1i(p.u(Program.WEATHER), 15);
-        GL20C.glUniform1i(p.u(Program.DH), 11);
-        GL20C.glUniform1i(p.u(Program.LAYER_TEX), 10);
-        GL20C.glUniformMatrix4fv(p.u(Program.INV_VIEW_PROJ), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
-        GL20C.glUniform4i(p.u(Program.INFO), lowDivisor, (int) (frame & 0xFFFF), quality.steps, quality.lightSteps);
-        boolean detail = quality.detail && style.detail() > 0f;
-        GL20C.glUniform4f(p.u(Program.FLAGS), detail ? 1f : 0f, temporal ? 1f : 0f, StratosConfig.debug.get(), dh ? 1f : 0f);
         int radius = StratosConfig.curvature.get();
-        GL20C.glUniform4f(p.u(Program.CAMERA), (float) camera.y, StratosConfig.farDistance.get(),
-                radius > 0 ? 0.5f / radius : 0f, CloudWeather.hazeDistance);
+        put(V_CAMERA, (float) camera.y, StratosConfig.farDistance.get(), radius > 0 ? 0.5f / radius : 0f,
+                CloudWeather.hazeDistance);
         LOOK.set(mc.gameRenderer.getMainCamera().getLookVector());
         // w: the angle one low-resolution pixel covers (for the thin layers' mip level): 2 tan(fovY / 2) / lines.
         float lines = low != null && low.height() > 0 ? low.height() : 360f;
-        float pixelAngle = 2f / (Math.max(ctx.projection().m11(), 1e-3f) * lines);
-        GL20C.glUniform4f(p.u(Program.FORWARD), LOOK.x, LOOK.y, LOOK.z, pixelAngle);
+        put(V_FORWARD, LOOK.x, LOOK.y, LOOK.z, 2f / (Math.max(ctx.projection().m11(), 1e-3f) * lines));
 
         boolean blocky = style.blockCell() > 0f;
         float thickness = blocky ? style.blockDepth() : CloudWeather.thickness;
-        GL20C.glUniform4f(p.u(Program.DECK), CloudWeather.base, Math.max(8f, thickness), CloudWeather.coverage,
+        put(V_DECK, CloudWeather.base, Math.max(8f, thickness), CloudWeather.coverage,
                 style.extinction() * StratosConfig.density.get().floatValue());
-        GL20C.glUniform4f(p.u(Program.TYPE), CloudWeather.stratiform, CloudWeather.towers, style.softness(), style.detail());
-        GL20C.glUniform4f(p.u(Program.LAYERS), StratosConfig.midHeight.get(), StratosConfig.highHeight.get(),
+        put(V_TYPE, CloudWeather.stratiform, CloudWeather.towers, style.softness(), style.detail());
+        put(V_LAYERS, StratosConfig.midHeight.get(), StratosConfig.highHeight.get(),
                 blocky ? 0f : CloudWeather.midCover, blocky ? 0f : CloudWeather.highCover);
 
         // Noise positions: world position minus drift, as a fraction of each tile (double precision here).
@@ -331,14 +385,13 @@ public final class CloudPass {
         double highX = camera.x - CloudWeather.highX;
         double highZ = camera.z - CloudWeather.highZ;
         float highSize = style.weatherSize() * 0.35f;
-        GL20C.glUniform4f(p.u(Program.SHAPE_OFF), frac(lowX / style.shapeSize()), frac(lowZ / style.shapeSize()),
+        put(V_SHAPE_OFF, frac(lowX / style.shapeSize()), frac(lowZ / style.shapeSize()),
                 frac(lowX / style.detailSize()), frac(lowZ / style.detailSize()));
-        GL20C.glUniform4f(p.u(Program.WEATHER_OFF), frac(lowX / style.weatherSize()), frac(lowZ / style.weatherSize()),
+        put(V_WEATHER_OFF, frac(lowX / style.weatherSize()), frac(lowZ / style.weatherSize()),
                 frac(highX / highSize), frac(highZ / highSize));
-        GL20C.glUniform4f(p.u(Program.SCALE), 1f / style.shapeSize(), 1f / style.detailSize(), 1f / style.weatherSize(),
-                1f / highSize);
+        put(V_SCALE, 1f / style.shapeSize(), 1f / style.detailSize(), 1f / style.weatherSize(), 1f / highSize);
         float cell = style.blockCell();
-        GL20C.glUniform4f(p.u(Program.BLOCK), cell, style.blockDepth(),
+        put(V_BLOCK, cell, style.blockDepth(),
                 blocky ? (float) (lowX - Math.floor(lowX / cell) * cell) : 0f,
                 blocky ? (float) (lowZ - Math.floor(lowZ / cell) * cell) : 0f);
 
@@ -347,32 +400,24 @@ public final class CloudPass {
         float sy = SunSource.dirY();
         float sz = SunSource.dirZ();
         float sun = smoothstep(-0.14f, 0.04f, sy);
-        float rain = CloudWeather.rain;
-        float overcast = 1f - 0.55f * rain - 0.2f * CloudWeather.thunder;
-        float lr;
-        float lg;
-        float lb;
+        float overcast = 1f - 0.55f * CloudWeather.rain - 0.2f * CloudWeather.thunder;
         if (sun > 0.02f) {
             float warm = smoothstep(-0.06f, 0.42f, sy);
             float intensity = 1.15f * sun * overcast;
-            lr = intensity;
-            lg = intensity * lerp(0.42f, 0.96f, warm);
-            lb = intensity * lerp(0.2f, 0.9f, warm);
-            GL20C.glUniform4f(p.u(Program.LIGHT_DIR), sx, sy, sz, 1f);
+            put(V_LIGHT_DIR, sx, sy, sz, 1f);
+            put(V_LIGHT_COL, intensity, intensity * lerp(0.42f, 0.96f, warm), intensity * lerp(0.2f, 0.9f, warm),
+                    style.forward());
         } else {
             float moon = 0.22f * level.getMoonBrightness() * overcast;
-            lr = 0.78f * moon;
-            lg = 0.86f * moon;
-            lb = 1.0f * moon;
-            GL20C.glUniform4f(p.u(Program.LIGHT_DIR), -sx, -sy, -sz, 0f);
+            put(V_LIGHT_DIR, -sx, -sy, -sz, 0f);
+            put(V_LIGHT_COL, 0.78f * moon, 0.86f * moon, moon, style.forward());
         }
-        GL20C.glUniform4f(p.u(Program.LIGHT_COL), lr, lg, lb, style.forward());
         Vec3 sky = level.getSkyColor(camera, partial);
         float[] fog = RenderSystem.getShaderFogColor();
-        GL20C.glUniform4f(p.u(Program.AMB_TOP), (float) sky.x * 0.9f + 0.015f, (float) sky.y * 0.9f + 0.017f,
-                (float) sky.z * 0.9f + 0.02f, style.ambient());
-        GL20C.glUniform4f(p.u(Program.AMB_BOTTOM), fog[0] * 0.5f, fog[1] * 0.5f, fog[2] * 0.52f, style.powder());
-        GL20C.glUniform4f(p.u(Program.HAZE), fog[0], fog[1], fog[2], CloudWeather.darken);
+        put(V_AMB_TOP, (float) sky.x * 0.9f + 0.015f, (float) sky.y * 0.9f + 0.017f, (float) sky.z * 0.9f + 0.02f,
+                style.ambient());
+        put(V_AMB_BOTTOM, fog[0] * 0.5f, fog[1] * 0.5f, fog[2] * 0.52f, style.powder());
+        put(V_HAZE, fog[0], fog[1], fog[2], CloudWeather.darken);
 
         int rgb = StratosConfig.tint.rgb();
         float tr = ((rgb >> 16) & 0xFF) / 255f;
@@ -387,7 +432,29 @@ public final class CloudPass {
             tg *= (float) (cloud.y / max);
             tb *= (float) (cloud.z / max);
         }
-        GL20C.glUniform4f(p.u(Program.TINT), tr, tg, tb, StratosConfig.brightness.get().floatValue());
+        put(V_TINT, tr, tg, tb, StratosConfig.brightness.get().floatValue());
+        put(V_MARCH, StratosConfig.marchNear.get() ? 1f : 0f, 0f, StratosConfig.marchThirdOctave.get() ? 1f : 0f, 0f);
+    }
+
+    private static void setCommon(Program p, PostPasses.Context ctx, Vec3 camera, StratosConfig.Quality quality,
+                                  long frame, boolean temporal, boolean dh, MemoryStack stack) {
+        if (preparedFrame != frame) {
+            prepare(ctx, camera, quality, frame);
+        }
+        GL20C.glUniform1i(p.u(Program.DEPTH), 12);
+        GL20C.glUniform1i(p.u(Program.SHAPE), 13);
+        GL20C.glUniform1i(p.u(Program.DETAIL), 14);
+        GL20C.glUniform1i(p.u(Program.WEATHER), 15);
+        GL20C.glUniform1i(p.u(Program.DH), 11);
+        GL20C.glUniform1i(p.u(Program.LAYER_TEX), 10);
+        GL20C.glUniformMatrix4fv(p.u(Program.INV_VIEW_PROJ), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+        GL20C.glUniform4i(p.u(Program.INFO), lowDivisor, (int) (frame & 0xFFFF), quality.steps, quality.lightSteps);
+        GL20C.glUniform4f(p.u(Program.FLAGS), preparedDetail ? 1f : 0f, temporal ? 1f : 0f, StratosConfig.debug.get(),
+                dh ? 1f : 0f);
+        for (int i = 0; i < V_SLOTS.length; i++) {
+            int at = i * 4;
+            GL20C.glUniform4f(p.u(V_SLOTS[i]), V[at], V[at + 1], V[at + 2], V[at + 3]);
+        }
     }
 
     private static boolean compile() {
@@ -399,7 +466,8 @@ public final class CloudPass {
         composite = Program.of("Stratos cloud composite", GlslPrograms.header() + CloudGlsl.COMPOSITE,
                 "u_Clouds", "u_LowDepth", "u_Depth", "u_InvViewProj", "u_Params");
         probe = Program.of("Stratos sun cover", GlslPrograms.header() + CloudGlsl.PROBE);
-        if (march == null || resolve == null || composite == null || probe == null) {
+        shadow = Program.of("Stratos cloud shadow map", GlslPrograms.header() + CloudGlsl.SHADOW);
+        if (march == null || resolve == null || composite == null || probe == null || shadow == null) {
             compileFailed = true;
             Stratos.LOGGER.error("[Atmosphera] Stratos clouds are off: a cloud program did not compile (see above)");
             release();
@@ -427,12 +495,13 @@ public final class CloudPass {
     public static void release() {
         releaseTargets();
         SunProbe.release();
-        for (Program p : new Program[] {march, resolve, composite, probe}) {
+        CloudShadow.release();
+        for (Program p : new Program[] {march, resolve, composite, probe, shadow}) {
             if (p != null) {
                 com.solarbiscuit.atmosphera.lib.gpu.GpuResources.deleteProgram(p.id());
             }
         }
-        march = resolve = composite = probe = null;
+        march = resolve = composite = probe = shadow = null;
         if (mrtFbo != 0) {
             com.solarbiscuit.atmosphera.lib.gpu.GpuResources.deleteFramebuffer(mrtFbo);
             mrtFbo = 0;
@@ -457,11 +526,11 @@ public final class CloudPass {
         static final String[] COMMON = {"u_Depth", "u_Shape", "u_Detail", "u_Weather", "atmos_DhDepth", "u_InvViewProj",
                 "u_Info", "u_Flags", "u_Camera", "u_Forward", "u_Deck", "u_Type", "u_Layers", "u_ShapeOff",
                 "u_WeatherOff", "u_Scale", "u_Block", "u_LightDir", "u_LightCol", "u_AmbTop", "u_AmbBottom", "u_Haze",
-                "u_Tint", "u_Probe0", "u_Probe1", "u_LayerTex"};
+                "u_Tint", "u_Probe0", "u_Probe1", "u_LayerTex", "u_March"};
         static final int DEPTH = 0, SHAPE = 1, DETAIL = 2, WEATHER = 3, DH = 4, INV_VIEW_PROJ = 5, INFO = 6, FLAGS = 7,
                 CAMERA = 8, FORWARD = 9, DECK = 10, TYPE = 11, LAYERS = 12, SHAPE_OFF = 13, WEATHER_OFF = 14, SCALE = 15,
                 BLOCK = 16, LIGHT_DIR = 17, LIGHT_COL = 18, AMB_TOP = 19, AMB_BOTTOM = 20, HAZE = 21, TINT = 22,
-                PROBE0 = 23, PROBE1 = 24, LAYER_TEX = 25;
+                PROBE0 = 23, PROBE1 = 24, LAYER_TEX = 25, MARCH = 26;
 
         /** Programs built from {@link CloudGlsl#COMMON} locate the common names; others name their own. */
         static Program of(String name, String fragment, String... uniforms) {

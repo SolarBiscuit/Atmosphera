@@ -138,7 +138,8 @@ public final class CloudNoise {
                     int i = (y * WEATHER + x) * 4;
                     weather.put(i, toByte(cov));
                     weather.put(i + 1, toByte(type));
-                    weather.put(i + 2, (byte) 0);
+                    // B: coverage again; its mips hold the maximum, not the average (0.2.0 empty-space skip).
+                    weather.put(i + 2, toByte(cov));
                     weather.put(i + 3, (byte) 0);
                 }
             });
@@ -190,7 +191,7 @@ public final class CloudNoise {
             GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL11C.GL_RGBA8, WEATHER, WEATHER, 0, GL11C.GL_RGBA,
                     GL11C.GL_UNSIGNED_BYTE, weather);
             params(GL11C.GL_TEXTURE_2D);
-            GL30C.glGenerateMipmap(GL11C.GL_TEXTURE_2D);
+            uploadWeatherMips(weather);
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
             GpuResources.textureBytes(weatherTex, WEATHER * WEATHER * 4L * 4 / 3);
             layersTex = GpuResources.texture("Stratos cloud layers");
@@ -210,6 +211,46 @@ public final class CloudNoise {
             MemoryUtil.memFree(layers);
             shapeData = detailData = weatherData = layersData = null;
             generating = false;
+        }
+    }
+
+    /**
+     * The weather map's mip chain, built here instead of by the driver (0.2.0): R, G and A are averaged as usual, B
+     * holds the maximum of its four children, so a coarse texel says whether any cloud can form inside its area.
+     */
+    private static void uploadWeatherMips(ByteBuffer level0) {
+        ByteBuffer previous = level0;
+        int size = WEATHER;
+        for (int level = 1; size > 1; level++) {
+            int half = size / 2;
+            ByteBuffer next = MemoryUtil.memAlloc(half * half * 4);
+            for (int y = 0; y < half; y++) {
+                for (int x = 0; x < half; x++) {
+                    int a = ((2 * y) * size + 2 * x) * 4;
+                    int b = a + 4;
+                    int c = a + size * 4;
+                    int d = c + 4;
+                    int o = (y * half + x) * 4;
+                    for (int ch = 0; ch < 4; ch++) {
+                        int va = previous.get(a + ch) & 0xFF;
+                        int vb = previous.get(b + ch) & 0xFF;
+                        int vc = previous.get(c + ch) & 0xFF;
+                        int vd = previous.get(d + ch) & 0xFF;
+                        int v = ch == 2 ? Math.max(Math.max(va, vb), Math.max(vc, vd)) : (va + vb + vc + vd + 2) / 4;
+                        next.put(o + ch, (byte) v);
+                    }
+                }
+            }
+            GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, level, GL11C.GL_RGBA8, half, half, 0, GL11C.GL_RGBA,
+                    GL11C.GL_UNSIGNED_BYTE, next);
+            if (previous != level0) {
+                MemoryUtil.memFree(previous);
+            }
+            previous = next;
+            size = half;
+        }
+        if (previous != level0) {
+            MemoryUtil.memFree(previous);
         }
     }
 
@@ -266,23 +307,19 @@ public final class CloudNoise {
         float sx = fade(fx);
         float sy = fade(fy);
         float sz = fade(fz);
-        float result = 0f;
-        float[] acc = new float[8];
-        int k = 0;
-        for (int dz = 0; dz <= 1; dz++) {
-            for (int dy = 0; dy <= 1; dy++) {
-                for (int dx = 0; dx <= 1; dx++) {
-                    int h = hash(Math.floorMod(x0 + dx, px), Math.floorMod(y0 + dy, py), Math.floorMod(z0 + dz, pz), 1);
-                    acc[k++] = grad(h, fx - dx, fy - dy, fz - dz);
-                }
-            }
-        }
-        float x00 = lerp(acc[0], acc[1], sx);
-        float x10 = lerp(acc[2], acc[3], sx);
-        float x01 = lerp(acc[4], acc[5], sx);
-        float x11 = lerp(acc[6], acc[7], sx);
-        result = lerp(lerp(x00, x10, sy), lerp(x01, x11, sy), sz);
-        return result;
+        // No array per call (0.2.0: the bake allocated about 100 MB of float[8] at load).
+        int xa = Math.floorMod(x0, px);
+        int xb = Math.floorMod(x0 + 1, px);
+        int ya = Math.floorMod(y0, py);
+        int yb = Math.floorMod(y0 + 1, py);
+        int za = Math.floorMod(z0, pz);
+        int zb = Math.floorMod(z0 + 1, pz);
+        float x00 = lerp(grad(hash(xa, ya, za, 1), fx, fy, fz), grad(hash(xb, ya, za, 1), fx - 1, fy, fz), sx);
+        float x10 = lerp(grad(hash(xa, yb, za, 1), fx, fy - 1, fz), grad(hash(xb, yb, za, 1), fx - 1, fy - 1, fz), sx);
+        float x01 = lerp(grad(hash(xa, ya, zb, 1), fx, fy, fz - 1), grad(hash(xb, ya, zb, 1), fx - 1, fy, fz - 1), sx);
+        float x11 = lerp(grad(hash(xa, yb, zb, 1), fx, fy - 1, fz - 1),
+                grad(hash(xb, yb, zb, 1), fx - 1, fy - 1, fz - 1), sx);
+        return lerp(lerp(x00, x10, sy), lerp(x01, x11, sy), sz);
     }
 
     private static float grad(int h, float x, float y, float z) {

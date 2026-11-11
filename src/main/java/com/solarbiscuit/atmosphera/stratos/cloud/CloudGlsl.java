@@ -35,6 +35,7 @@ final class CloudGlsl {
             uniform vec4 u_AmbBottom;  // rgb light from below, w powder
             uniform vec4 u_Haze;       // rgb haze colour, w darkening in rain
             uniform vec4 u_Tint;       // rgb tint, w brightness
+            uniform vec4 u_March;      // 0.2.0 toggles: x 1/z near steps, z third octave (y, w unused)
 
             const float STRATOS_BIG = 1e9;
             const float STRATOS_NEAR_BAND = 2200.0;
@@ -186,20 +187,78 @@ final class CloudGlsl {
                 return smoothstep(0.52, 0.8, fibre) * field * u_Layers.w;
             }
 
-            // Altocumulus clumps at tile coordinates uv: small rounded cells in rows (a "mackerel" sky).
-            float stratos_altoAt(vec2 uv, float lod) {
+            // Altocumulus (0.1.6): four forms, each over regions of a kilometre or two, blended at the borders, so one
+            // sky holds different kinds instead of one repeated pattern. The region field: two very slow values that
+            // pick the form, the direction and spacing of rows, and how packed the clumps are.
+            vec2 stratos_altoRegion(vec2 uv) {
+                return vec2(textureLod(u_LayerTex, uv * 0.071 + vec2(0.31, 0.77), 5.0).a,
+                        textureLod(u_LayerTex, uv * 0.053 + vec2(0.83, 0.12), 5.0).g);
+            }
+
+            // Weights of the forms (sum 1): x floccus (ragged tufts of mixed size), y undulatus (rows), z lacunosus
+            // (a thin sheet with round holes), w lenticular (smooth lens-shaped patches).
+            vec4 stratos_altoWeights(vec2 r) {
+                float hiA = smoothstep(0.48, 0.6, r.x);
+                float hiB = smoothstep(0.5, 0.62, r.y);
+                vec4 w = vec4(hiA * (1.0 - hiB), 1.0 - smoothstep(0.4, 0.52, r.x), hiA * hiB * 0.85,
+                        smoothstep(0.58, 0.7, r.y) * (1.0 - smoothstep(0.4, 0.5, r.x)) * 0.8) + 0.01;
+                return w / (w.x + w.y + w.z + w.w);
+            }
+
+            // The blended form at tile coordinates uv (0..1 cloud), and its albedo (neighbouring clumps differ in
+            // brightness and thickness).
+            float stratos_altoShape(vec2 uv, float lod, vec2 r, vec4 w, out float albedo) {
                 vec4 l = textureLod(u_LayerTex, uv, lod);
-                float ripple = 0.5 + 0.5 * sin((uv.y * 40.0 + l.a * 3.0) * 6.2831853);
-                return smoothstep(0.35, 0.75, l.b * (0.62 + 0.38 * ripple));
+                // A second cell sample at another scale and angle: clump size and brightness vary from cell to cell.
+                float c2 = textureLod(u_LayerTex, mat2(0.8, 0.6, -0.6, 0.8) * uv * 1.85 + vec2(0.21, 0.67), lod + 0.89).b;
+                float d = 0.0;
+                albedo = 0.0;
+                if (w.x > 0.011) {
+                    float big = smoothstep(0.3, 0.7, l.a);
+                    float tuft = max(l.b * mix(1.0, 0.72, big), c2 * mix(0.72, 1.0, big));
+                    float f = smoothstep(0.42, 0.78, tuft - (l.r - 0.5) * 0.22) * mix(0.75, 1.15, c2);
+                    d += w.x * f;
+                    albedo += w.x * mix(0.8, 1.1, c2);
+                }
+                if (w.y > 0.011) {
+                    // Rows turn and change their spacing from region to region.
+                    float angle = r.x * 2.4 + r.y * 1.3;
+                    float rows = mix(30.0, 60.0, r.y);
+                    float phase = dot(uv, vec2(cos(angle), sin(angle))) * rows + l.a * 3.0;
+                    float ripple = 0.5 + 0.5 * sin(phase * 6.2831853);
+                    float f = smoothstep(0.35, 0.75, l.b * (0.55 + 0.45 * ripple)) * mix(0.8, 1.1, c2);
+                    d += w.y * f;
+                    albedo += w.y * mix(0.85, 1.05, c2);
+                }
+                if (w.z > 0.011) {
+                    // Holes where the cells' centres are; thin, so the sky shows through.
+                    float holes = smoothstep(0.55, 0.85, l.b);
+                    d += w.z * (1.0 - holes) * smoothstep(0.3, 0.6, l.a) * 0.6;
+                    albedo += w.z * 0.95;
+                }
+                if (w.w > 0.011) {
+                    // Long smooth lenses: the slow channel stretched along one direction.
+                    vec2 luv = mat2(0.6, -0.8, 0.8, 0.6) * uv;
+                    float lens = textureLod(u_LayerTex, vec2(luv.x * 0.15, luv.y * 0.6) + vec2(0.4, 0.9), lod).a;
+                    d += w.w * smoothstep(0.56, 0.78, lens) * 0.9;
+                    albedo += w.w * 1.05;
+                }
+                return d;
             }
 
             // Altocumulus: optical thickness at xz on the mid deck; in rain (stratiform weight) it melts into a smooth
-            // altostratus veil. Its tile coordinates go to uvOut.
-            float stratos_alto(vec2 xz, float lod, out vec2 uvOut) {
+            // altostratus veil. Tile coordinates, region, weights and albedo go out for the shading sample.
+            float stratos_alto(vec2 xz, float lod, out vec2 uvOut, out vec2 rOut, out vec4 wOut, out float albedo) {
                 vec2 uv = xz * u_Scale.z * 3.0 + u_WeatherOff.xy * 3.0;
                 uvOut = uv;
+                rOut = stratos_altoRegion(uv);
+                wOut = stratos_altoWeights(rOut);
                 float field = smoothstep(0.38, 0.68, textureLod(u_LayerTex, uv * 0.23 + vec2(0.5, 0.17), max(lod - 2.1, 0.0)).a);
-                return mix(stratos_altoAt(uv, lod) * field, field * 0.55, u_Type.x) * u_Layers.z;
+                // Some regions sparse, some packed.
+                float crowd = mix(0.7, 1.2, rOut.y);
+                float shape = stratos_altoShape(uv, lod, rOut, wOut, albedo);
+                albedo = mix(albedo, 1.0, u_Type.x);
+                return mix(shape * field * crowd, field * 0.55, u_Type.x) * u_Layers.z;
             }
 
             // Mip level of the 512-texel layer texture for a sheet hit at distance t: the pixel's footprint on the
@@ -265,16 +324,31 @@ final class CloudGlsl {
                 float mu = dot(dir, u_LightDir.xyz);
                 float phase = mix(0.0795775, 0.8 * stratos_hg(mu, 0.8) + 0.2 * stratos_hg(mu, -0.25), u_LightCol.w);
                 float phaseMulti = stratos_hg(mu, 0.3);
+                // 0.2.0 (u_March.z): a third, softer scattering octave lifts deep cumulus cores (hoisted per ray).
+                float phase3 = u_March.z > 0.5 ? stratos_hg(mu, 0.1) : 0.0;
                 vec3 light = vec3(0.0);
                 float trans = 1.0;
                 float distSum = 0.0;
                 float weightSum = 0.0;
                 float t = seg.x + dt * jitter;
-                for (int i = 0; i < 48; i++) {
-                    if (i >= steps || trans < 0.02 || t > seg.y) {
+                // 0.2.0 (u_March.x): with the camera in or just under the deck, near steps spaced evenly in 1/t, so
+                // the first steps are not hundreds of blocks apart in front of the camera.
+                bool disparity = u_March.x > 0.5 && !far && seg.x < 400.0;
+                float invN = 1.0 / max(seg.x, 16.0);
+                float invF = 1.0 / seg.y;
+                int taken = 0;
+                for (int i = 0; i < 64; i++) {
+                    if (taken >= steps || trans < 0.02 || t > seg.y) {
                         break;
                     }
+                    if (disparity) {
+                        float k = (float(taken) + jitter) / float(steps);
+                        t = 1.0 / (invN - k * (invN - invF));
+                        float tNext = 1.0 / max(invN - (k + 1.0 / float(steps)) * (invN - invF), 1e-6);
+                        dt = max(min(tNext, seg.y) - t, 0.5);
+                    }
                     vec3 p = dir * t;
+                    taken++;
                     float d = stratos_density(p, lod, detail);
                     if (d > 0.0) {
                         float sigma = d * u_Deck.w;
@@ -286,7 +360,8 @@ final class CloudGlsl {
                         // Rain and storms darken the lower part of the deck (0.1.1: an albedo term, no longer a dimmer on
                         // the whole picture, which made rain clouds vanish into the sky).
                         float albedo = mix(1.0 - u_Haze.w, 1.0, clamp(h * 1.4, 0.0, 1.0));
-                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti) * powder * 12.566
+                        float third = u_March.z > 0.5 ? exp(-od * 0.0625) * 0.25 * phase3 : 0.0;
+                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti + third) * powder * 12.566
                                 + stratos_ambient(h) * mix(0.55, 1.0, h)) * albedo;
                         float tr = exp(-sigma * dt);
                         float absorbed = trans * (1.0 - tr);
@@ -310,20 +385,24 @@ final class CloudGlsl {
                 vec3 p = dir * t;
                 float amount;
                 float shade = 1.0;
+                float altoAlbedo = 1.0;
                 // Path length through a thin layer grows at grazing angles (with curvature, roughly).
                 float slope = max(abs(dir.y + 2.0 * t * dot(dir.xz, dir.xz) * u_Camera.z), 0.06);
                 if (cirrus) {
                     amount = stratos_cirrus(p.xz, stratos_sheetLod(t, slope, u_Scale.w));
                 } else {
                     vec2 uv;
+                    vec2 region;
+                    vec4 forms;
                     float lod = stratos_sheetLod(t, slope, u_Scale.z * 3.0);
-                    amount = stratos_alto(p.xz, lod, uv);
+                    amount = stratos_alto(p.xz, lod, uv, region, forms, altoAlbedo);
                     if (amount > 0.003 && u_Type.x < 0.95) {
                         // A clump is lit on its sun side and shaded on the far side: compare with a sample a little
                         // towards the light, so each clump reads as a puff instead of a flat disc.
                         vec2 toLight = u_LightDir.xz / max(length(u_LightDir.xz), 1e-3);
-                        float towards = stratos_altoAt(uv + toLight * 0.01, lod);
-                        float here = stratos_altoAt(uv, lod);
+                        float unused;
+                        float towards = stratos_altoShape(uv + toLight * 0.01, lod, region, forms, unused);
+                        float here = stratos_altoShape(uv, lod, region, forms, unused);
                         shade = mix(clamp(1.0 - (towards - here) * 2.2, 0.35, 1.3), 1.0, u_Type.x);
                     }
                 }
@@ -342,7 +421,7 @@ final class CloudGlsl {
                 } else {
                     // Softer forward glow than cirrus, capped: small bright clumps near the sun read as glitter (0.1.3).
                     float phase = min(mix(0.0795775, 0.75 * stratos_hg(mu, 0.55) + 0.25 * stratos_hg(mu, -0.2), u_LightCol.w), 0.25);
-                    float albedo = 1.0 - 0.6 * u_Haze.w;
+                    float albedo = (1.0 - 0.6 * u_Haze.w) * altoAlbedo;
                     s = (u_LightCol.rgb * phase * 12.566 * 0.85 * exp(-tau * 0.4) * shade
                             + u_AmbTop.rgb * u_AmbTop.w * 0.9) * albedo;
                 }
@@ -541,6 +620,56 @@ final class CloudGlsl {
             }
             """;
 
+    /**
+     * Cloud shadow map (0.2.0): each texel is a point on a horizontal reference plane inside the low deck; the clouds'
+     * transmittance along the sun through the whole deck there, times the altocumulus and cirrus layers. World-locked
+     * (the CPU snaps the map centre to whole texels), so shadows do not swim. Read through lib CloudShadowShader.
+     */
+    static final String SHADOW = COMMON + """
+            uniform vec4 u_Probe0;   // xyz sun direction
+            uniform vec4 u_Probe1;   // xy map centre minus camera, z map size (blocks), w reference plane height
+            in vec2 v_Uv;
+            out vec4 fragColor;
+
+            void main() {
+                vec3 sun = u_Probe0.xyz;
+                if (sun.y < 0.03) {
+                    fragColor = vec4(1.0);
+                    return;
+                }
+                vec2 xz = u_Probe1.xy + (v_Uv - 0.5) * u_Probe1.z;
+                vec3 p0 = vec3(xz.x, u_Probe1.w - u_Camera.x, xz.y);
+                float top = u_Deck.x + (u_Block.x > 0.0 ? u_Block.y : u_Deck.y);
+                float ta = (u_Deck.x - u_Probe1.w) / sun.y;
+                float tb = (top - u_Probe1.w) / sun.y;
+                int n = max(u_Info.z, 1);
+                float dt = (tb - ta) / float(n);
+                float t = ta + dt * 0.5;
+                float od = 0.0;
+                for (int i = 0; i < 12; i++) {
+                    if (i >= n) {
+                        break;
+                    }
+                    od += stratos_density(p0 + sun * t, 1.0, false) * dt;
+                    t += dt;
+                }
+                float trans = exp(-od * u_Deck.w);
+                if (u_Layers.z > 0.0 && u_Block.x == 0.0) {
+                    vec3 pm = p0 + sun * ((u_Layers.x - u_Probe1.w) / sun.y);
+                    vec2 uv;
+                    vec2 region;
+                    vec4 forms;
+                    float albedo;
+                    trans *= exp(-stratos_alto(pm.xz, 2.0, uv, region, forms, albedo) * 1.4);
+                }
+                if (u_Layers.w > 0.0) {
+                    vec3 ph = p0 + sun * ((u_Layers.y - u_Probe1.w) / sun.y);
+                    trans *= exp(-stratos_cirrus(ph.xz, 2.0) * 0.45);
+                }
+                fragColor = vec4(trans);
+            }
+            """;
+
     /** Sun and moon cover: transmittance along the light directions from the camera, into a 2x1 target. */
     static final String PROBE = COMMON + """
             uniform vec4 u_Probe0;   // xyz sun direction
@@ -566,7 +695,10 @@ final class CloudGlsl {
                 float tm = stratos_plane(u_Layers.x, dir);
                 if (tm > 0.0 && u_Layers.z > 0.0 && u_Block.x == 0.0) {
                     vec2 uv;
-                    trans *= exp(-stratos_alto((dir * tm).xz, 2.0, uv) * 1.4 / max(dir.y, 0.06));
+                    vec2 region;
+                    vec4 forms;
+                    float albedo;
+                    trans *= exp(-stratos_alto((dir * tm).xz, 2.0, uv, region, forms, albedo) * 1.4 / max(dir.y, 0.06));
                 }
                 float th = stratos_plane(u_Layers.y, dir);
                 if (th > 0.0 && u_Layers.w > 0.0) {

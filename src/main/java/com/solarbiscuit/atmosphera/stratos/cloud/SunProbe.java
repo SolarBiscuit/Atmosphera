@@ -25,7 +25,9 @@ final class SunProbe {
     private static final int[] PBOS = new int[RING];
     private static final long[] FENCES = new long[RING];
     private static int next;
-    private static int previousFbo;
+    private static final float INTERVAL = 0.1f;
+    private static float sinceProbe = INTERVAL;
+    private static float sinceSample;
     private static float sunCover;
     private static float moonCover;
 
@@ -40,13 +42,21 @@ final class SunProbe {
         return moonCover;
     }
 
-    /** Binds the 2x1 target for the probe draw; false when it could not be made. */
+    /**
+     * Binds the 2x1 target for the probe draw; false when it could not be made, or in the frames between probes
+     * (0.2.3: ten probes a second whatever the frame rate; the cover is smoothed over 0.3 s anyway). No GL state query: the
+     * caller's state snapshot puts the framebuffer back (0.2.2; the per-frame query and readback showed as 0.15-0.23 ms
+     * in the pass at 1440p).
+     */
     static boolean begin() {
         collect();
+        if (sinceProbe < INTERVAL) {
+            return false;
+        }
+        sinceProbe = 0f;
         if (texture == 0 && !create()) {
             return false;
         }
-        previousFbo = GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING);
         GL30C.glBindFramebuffer(GL30C.GL_FRAMEBUFFER, framebuffer);
         GL11C.glViewport(0, 0, 2, 1);
         return true;
@@ -65,12 +75,13 @@ final class SunProbe {
         GL15C.glBindBuffer(GL21C.GL_PIXEL_PACK_BUFFER, 0);
         FENCES[slot] = GL32C.glFenceSync(GL32C.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
         next = (slot + 1) % RING;
-        GL30C.glBindFramebuffer(GL30C.GL_FRAMEBUFFER, previousFbo);
     }
 
     /** Reads every slot whose fence has passed (oldest first); never blocks. */
     private static void collect() {
-        float dt = (float) Math.min(0.25, Math.max(0.0, AtmosClock.deltaSeconds()));
+        float dt = (float) Math.max(0.0, AtmosClock.deltaSeconds());
+        sinceSample += dt;
+        sinceProbe += dt;
         for (int i = 0; i < RING; i++) {
             int slot = (next + i) % RING;
             long fence = FENCES[slot];
@@ -90,7 +101,8 @@ final class SunProbe {
                 float sunT = clamp01(data.getFloat(0));
                 float moonT = clamp01(data.getFloat(4));
                 GL15C.glUnmapBuffer(GL21C.GL_PIXEL_PACK_BUFFER);
-                float k = 1f - (float) Math.exp(-dt / 0.3f);
+                float k = 1f - (float) Math.exp(-Math.min(sinceSample, 0.5f) / 0.3f);
+                sinceSample = 0f;
                 sunCover += (1f - sunT - sunCover) * k;
                 moonCover += (1f - moonT - moonCover) * k;
             }
