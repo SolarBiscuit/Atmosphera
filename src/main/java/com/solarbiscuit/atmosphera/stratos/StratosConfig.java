@@ -68,12 +68,22 @@ public final class StratosConfig {
     public static AtmosConfig.FeatureSwitch shadows;
     public static AtmosOption<Boolean> marchNear;
     public static AtmosOption<Boolean> marchThirdOctave;
+    public static AtmosConfig.FeatureSwitch sky;
+    public static AtmosOption<Double> skyBrightness;
+    public static AtmosOption<Double> skySaturation;
+    public static AtmosOption<Integer> horizonBlend;
+    public static AtmosOption<Boolean> packSunMoon;
+    public static AtmosOption<Double> sunSize;
+    public static AtmosOption<Double> moonSize;
+    public static AtmosOption<Double> stars;
+    public static AtmosOption<Double> milkyWay;
+    public static AtmosOption<Double> airglow;
 
     private StratosConfig() {
     }
 
     static void register() {
-        AtmosConfig config = AtmosConfig.create(Stratos.MOD_ID, "Stratos (clouds)");
+        AtmosConfig config = AtmosConfig.create(Stratos.MOD_ID, "Stratos (sky and clouds)");
         config.section("clouds", "Clouds: weather-driven decks of volumetric cumulus, sheets and towers, with altocumulus "
                 + "and cirrus above.");
         clouds = config.featureSwitch("enabled", true, "Stratos clouds",
@@ -141,6 +151,29 @@ public final class StratosConfig {
                         + "ones are close to the camera.");
         marchThirdOctave = config.toggle("third_octave", false, ChangeTier.LIVE, "Third scattering octave",
                 "A softer third light-scattering term that lifts deep cloud cores out of grey.");
+
+        config.section("sky", "The sky (0.3.0 \"Firmament\"): a physically based atmosphere, sun, moon and stars.");
+        sky = config.featureSwitch("enabled", true, "Stratos sky",
+                "Replaces vanilla's sky with Stratos's: blue overhead, hazy at the horizon, true sunsets and twilight, "
+                        + "the Earth's shadow, a starry night. Off under a shaderpack (it draws its own).");
+        skyBrightness = config.percent("brightness", 1.0, 0.5, 2.0, ChangeTier.LIVE, "Sky brightness",
+                "Exposure of the daylight sky.");
+        skySaturation = config.percent("saturation", 1.0, 0.0, 1.5, ChangeTier.LIVE, "Sky saturation",
+                "How colourful the sky is. 0% is grey.");
+        horizonBlend = config.slider("horizon_blend", 6, 0, 20, 1, ChangeTier.LIVE, "Horizon haze",
+                "How far above the horizon (degrees) the sky fades into the fog colour, so distant terrain meets the "
+                        + "sky without a seam (biome fog from Atmospherics comes through).");
+        packSunMoon = config.toggle("pack_sun_moon", false, ChangeTier.LIVE, "Resource pack sun and moon",
+                "Use the resource pack's sun and moon textures instead of Stratos's own sun and moon.");
+        sunSize = config.percent("sun_size", 1.0, 0.25, 4.0, ChangeTier.LIVE, "Sun size",
+                "100% is a disc 1.5 degrees across (the real sun is half that; vanilla's is far larger).");
+        moonSize = config.percent("moon_size", 1.0, 0.25, 4.0, ChangeTier.LIVE, "Moon size",
+                "100% is a disc 2.2 degrees across.");
+        stars = config.percent("stars", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Stars", "Brightness of the stars.");
+        milkyWay = config.percent("milky_way", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Milky Way",
+                "Brightness of the faint band of the galaxy.");
+        airglow = config.percent("airglow", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Airglow",
+                "The faint green and amber glow low in a dark night sky.");
         config.register();
     }
 }

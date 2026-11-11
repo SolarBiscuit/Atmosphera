@@ -2,6 +2,7 @@ package com.solarbiscuit.atmosphera.stratos;
 
 import com.solarbiscuit.atmosphera.stratos.cloud.CloudPass;
 import com.solarbiscuit.atmosphera.stratos.cloud.CloudStyle;
+import com.solarbiscuit.atmosphera.stratos.sky.SkyPass;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientReloadListenersEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
@@ -12,10 +13,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Stratos: clouds (and, on the roadmap, the sky) for the Atmosphera suite. Everything goes through the AtmospheraLib
- * API: the config and options page, one cloud feature drawn as a post pass at the lib's cloud stage, and the lib's
- * cloud cover service, through which Lumis and other mods learn where the clouds are. Client-only; on a dedicated
- * server it does nothing.
+ * Stratos: the sky and clouds for the Atmosphera suite. Everything goes through the AtmospheraLib API: the config and
+ * options page, a cloud feature drawn as a post pass at the lib's cloud stage, a sky feature at its sky stage (0.3.0),
+ * and the lib's cloud cover and sky services, through which Lumis and other mods learn where the clouds are and what
+ * the sky looks like. Client-only; on a dedicated server it does nothing.
  * <p>
  * Copyright (C) 2026 SolarBiscuit. All Rights Reserved (see LICENSE).
  */
@@ -32,6 +33,7 @@ public final class Stratos {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         StratosConfig.register();
         CloudPass.register();
+        SkyPass.register();
         modBus.addListener((RegisterClientReloadListenersEvent e) -> e.registerReloadListener(new CloudStyle.Loader()));
     }
 }

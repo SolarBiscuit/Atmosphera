@@ -1,0 +1,350 @@
+package com.solarbiscuit.atmosphera.stratos.sky;
+
+import com.mojang.blaze3d.systems.RenderSystem;
+import com.solarbiscuit.atmosphera.lib.client.AtmosClient;
+import com.solarbiscuit.atmosphera.lib.feature.AtmosFeature;
+import com.solarbiscuit.atmosphera.lib.feature.Capability;
+import com.solarbiscuit.atmosphera.lib.gpu.FrameUniforms;
+import com.solarbiscuit.atmosphera.lib.gpu.GlStateSnapshot;
+import com.solarbiscuit.atmosphera.lib.gpu.GlslPrograms;
+import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
+import com.solarbiscuit.atmosphera.lib.gpu.PostPasses;
+import com.solarbiscuit.atmosphera.lib.gpu.RenderTargets;
+import com.solarbiscuit.atmosphera.lib.world.SkySource;
+import com.solarbiscuit.atmosphera.lib.world.SunSource;
+import com.solarbiscuit.atmosphera.stratos.Stratos;
+import com.solarbiscuit.atmosphera.stratos.StratosConfig;
+import com.solarbiscuit.atmosphera.stratos.cloud.CloudNoise;
+import net.minecraft.client.Camera;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.DimensionSpecialEffects;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.world.effect.MobEffects;
+import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.level.material.FogType;
+import org.lwjgl.opengl.GL11C;
+import org.lwjgl.opengl.GL12C;
+import org.lwjgl.opengl.GL13C;
+import org.lwjgl.opengl.GL20C;
+import org.lwjgl.opengl.GL30C;
+import org.lwjgl.system.MemoryStack;
+
+import java.nio.ByteBuffer;
+
+/**
+ * Stratos's sky (0.3.0 "Firmament"): one full-screen draw at the lib's {@code SKY} stage (Forge's AFTER_SKY, before
+ * terrain), over vanilla's sky. A physically based atmosphere from three look-up tables (see {@link SkyGlsl}), a
+ * procedural sun, moon and stars (or the resource pack's sun and moon), and a horizon that fades into the game's fog
+ * colour, so terrain fog (and Atmospherics' biome fog) meets the sky without a seam.
+ * <p>
+ * The drawn sky's colour above the camera goes to the lib's {@link SkySource} from {@link SkyModel} (a Java twin of the
+ * model, no GPU readback), so Torrente's reflections, Lumis and Stratos's own clouds follow it.
+ */
+public final class SkyPass {
+    /** Linear light to display: the exposure at 100% sky brightness (calibrated against vanilla's noon sky). */
+    static final float EXPOSURE = 32f;
+    private static final int TRANS_W = 256, TRANS_H = 64, MS_SIZE = 32, VIEW_W = 192, VIEW_H = 108;
+    private static final ResourceLocation PACK_SUN = new ResourceLocation("textures/environment/sun.png");
+    private static final ResourceLocation PACK_MOON = new ResourceLocation("textures/environment/moon_phases.png");
+
+    private static AtmosFeature feature;
+    private static int transmittanceProgram;
+    private static int multiScatterProgram;
+    private static int skyViewProgram;
+    private static int skyProgram;
+    private static int[] viewU;
+    private static int[] skyU;
+    private static boolean compileFailed;
+    private static int transmittance;
+    private static int multiScatter;
+    private static int skyView;
+    private static int fbo;
+    private static boolean staticLuts;
+    private static float lutSun = Float.NaN;
+    private static float lutRadius = Float.NaN;
+
+    // Per-frame values shared with the SkySource provider (render thread).
+    private static float rain;
+    private static float thunder;
+    private static float moonBrightness = 1f;
+    private static long drawnFrame = -1;
+    private static final float[] TMP = new float[3];
+
+    private SkyPass() {
+    }
+
+    public static void register() {
+        Thread bake = new Thread(SkyModel::build, "Stratos sky model");
+        bake.setDaemon(true);
+        bake.start();
+        feature = AtmosFeature.builder(Stratos.MOD_ID, "sky")
+                .provides(Capability.SKY)
+                .uses(AtmosFeature.Uses.WORLD_PASS)
+                .switchedBy(StratosConfig.sky)
+                .register();
+        PostPasses.register(feature, PostPasses.Stage.SKY, 0, "stratos_sky", SkyPass::render);
+        SkySource.register(feature, SkyPass::skyColor);
+    }
+
+    /** True while the sky was drawn this frame or the one before. */
+    public static boolean drawn() {
+        return feature != null && feature.isActive() && AtmosClient.frame() - drawnFrame <= 1;
+    }
+
+    /**
+     * The drawn sky's colour high above the camera, in the game's display values (like {@code getSkyColor}); mirrors
+     * the sky program's main for the zenith.
+     */
+    private static boolean skyColor(float[] rgb) {
+        if (!drawn() || !SkyModel.ready()) {
+            return false;
+        }
+        float sunY = SunSource.dirY();
+        SkyModel.zenith(sunY, TMP);
+        float exposure = exposure(sunY);
+        float dim = 1f - 0.35f * rain - 0.2f * thunder;
+        float grey = 0.2126f * TMP[0] + 0.7152f * TMP[1] + 0.0722f * TMP[2];
+        float wet = 1f - 0.6f * rain;
+        float night = 1f - smoothstep(-0.18f, 0.02f, sunY);
+        float moon = 0.35f + 0.65f * moonBrightness;
+        float[] nightSky = {0.010f * moon * 0.6f, 0.014f * moon * 0.6f, 0.030f * moon * 0.6f};
+        for (int c = 0; c < 3; c++) {
+            float lum = (grey + (TMP[c] - grey) * wet) * dim;
+            rgb[c] = (float) Math.pow(1.0 - Math.exp(-lum * exposure), 1.0 / 2.2) + nightSky[c] * night;
+        }
+        float sat = StratosConfig.skySaturation.get().floatValue();
+        float l = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
+        for (int c = 0; c < 3; c++) {
+            rgb[c] = Math.max(0f, Math.min(1f, l + (rgb[c] - l) * sat));
+        }
+        return true;
+    }
+
+    /**
+     * The exposure for this sun height: {@link #EXPOSURE} by day, up to 8x as the sun sinks below the horizon (eyes
+     * adapt to twilight; without it the sky went black within 3 degrees and the Belt of Venus never showed).
+     */
+    static float exposure(float sunY) {
+        float adapt = 1f + 7f * smoothstep(0.02f, -0.1f, sunY);
+        return EXPOSURE * adapt * StratosConfig.skyBrightness.get().floatValue();
+    }
+
+    /** Whether the sky is drawn here (the overworld's kind of sky, not hidden by thick fog or blindness). */
+    private static boolean wanted(Minecraft mc, ClientLevel level) {
+        if (level.effects().skyType() != DimensionSpecialEffects.SkyType.NORMAL) {
+            return false;
+        }
+        Camera camera = mc.gameRenderer.getMainCamera();
+        FogType fog = camera.getFluidInCamera();
+        if (fog == FogType.LAVA || fog == FogType.POWDER_SNOW) {
+            return false;
+        }
+        return !(camera.getEntity() instanceof LivingEntity living)
+                || !(living.hasEffect(MobEffects.BLINDNESS) || living.hasEffect(MobEffects.DARKNESS));
+    }
+
+    private static void render(PostPasses.Context ctx) {
+        Minecraft mc = Minecraft.getInstance();
+        ClientLevel level = mc.level;
+        if (level == null || compileFailed || !CloudNoise.ready() || !wanted(mc, level)) {
+            return;
+        }
+        RenderTargets.Scene scene = RenderTargets.scene();
+        if (!scene.usable()) {
+            return;
+        }
+        if (skyProgram == 0 && !compile()) {
+            return;
+        }
+        float partial = ctx.partialTick();
+        rain = level.getRainLevel(partial);
+        thunder = level.getThunderLevel(partial);
+        moonBrightness = level.getMoonBrightness();
+        long frame = AtmosClient.frame();
+        FrameUniforms.update(frame);
+        GlStateSnapshot saved = GlStateSnapshot.save();
+        try (MemoryStack stack = MemoryStack.stackPush()) {
+            GL11C.glDisable(GL11C.GL_BLEND);
+            GL11C.glDisable(GL11C.GL_DEPTH_TEST);
+            GL11C.glDepthMask(false);
+            if (!staticLuts && !buildStaticLuts()) {
+                return;
+            }
+            float sunY = SunSource.dirY();
+            float radius = (float) (SkyModel.RG + SkyModel.TABLE_HEIGHT + Math.max(0.0, ctx.camera().y - 63.0) / 1000.0);
+            if (Float.isNaN(lutSun) || Math.abs(sunY - lutSun) > 0.001f || Math.abs(radius - lutRadius) > 0.02f) {
+                if (!drawLut(skyView, VIEW_W, VIEW_H)) {
+                    return;
+                }
+                bind(13, transmittance);
+                bind(14, multiScatter);
+                GL20C.glUseProgram(skyViewProgram);
+                GL20C.glUniform1i(viewU[0], 13);
+                GL20C.glUniform1i(viewU[1], 14);
+                GL20C.glUniform4f(viewU[2], radius, sunY, 0f, 0f);
+                GlslPrograms.drawFullscreen();
+                lutSun = sunY;
+                lutRadius = radius;
+            }
+
+            if (!RenderTargets.bindColorOnly(scene)) {
+                return;
+            }
+            boolean pack = StratosConfig.packSunMoon.get();
+            bind(13, transmittance);
+            bind(14, skyView);
+            bind(15, CloudNoise.layers());
+            bind(11, pack ? mc.getTextureManager().getTexture(PACK_SUN).getId() : 0);
+            bind(10, pack ? mc.getTextureManager().getTexture(PACK_MOON).getId() : 0);
+            GL20C.glUseProgram(skyProgram);
+            int[] u = skyU;
+            GL20C.glUniform1i(u[0], 13);
+            GL20C.glUniform1i(u[1], 14);
+            GL20C.glUniform1i(u[2], 15);
+            GL20C.glUniform1i(u[3], 11);
+            GL20C.glUniform1i(u[4], 10);
+            GL20C.glUniformMatrix4fv(u[5], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+            float sx = SunSource.dirX();
+            float sz = SunSource.dirZ();
+            GL20C.glUniform4f(u[6], radius, sunY, (float) Math.atan2(sz, sx), exposure(sunY));
+            float sunRadius = (float) Math.toRadians(0.75 * StratosConfig.sunSize.get());
+            float moonRadius = (float) Math.toRadians(1.1 * StratosConfig.moonSize.get());
+            GL20C.glUniform4f(u[7], sx, sunY, sz, sunRadius);
+            GL20C.glUniform4f(u[8], -sx, -sunY, -sz, moonRadius);
+            int phase = level.getMoonPhase();
+            GL20C.glUniform4f(u[9], (float) (phase * Math.PI / 4.0), moonBrightness, pack ? 1f : 0f, phase);
+            GL20C.glUniform4f(u[10], StratosConfig.stars.get().floatValue(), StratosConfig.milkyWay.get().floatValue(),
+                    level.getSunAngle(partial), StratosConfig.airglow.get().floatValue());
+            GL20C.glUniform4f(u[11], StratosConfig.skySaturation.get().floatValue(),
+                    (float) Math.toRadians(StratosConfig.horizonBlend.get()), rain, thunder);
+            float[] fog = RenderSystem.getShaderFogColor();
+            float pixel = 2f / (Math.max(ctx.projection().m11(), 1e-3f) * Math.max(scene.height(), 1));
+            GL20C.glUniform4f(u[12], fog[0], fog[1], fog[2], pixel);
+            // y, z: cosines of the sun's and moon's early-out angles (8 and 3 radii).
+            GL20C.glUniform4f(u[13], ((level.getGameTime() % 24000L) + partial) / 20f,
+                    (float) Math.cos(Math.min(sunRadius * 8f, Math.PI)), (float) Math.cos(Math.min(moonRadius * 3f, Math.PI)), 0f);
+            GlslPrograms.drawFullscreen();
+            drawnFrame = frame;
+        } finally {
+            for (int unit = 10; unit <= 15; unit++) {
+                GL13C.glActiveTexture(GL13C.GL_TEXTURE0 + unit);
+                GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
+            }
+            saved.restore();
+        }
+    }
+
+    private static void bind(int unit, int texture) {
+        GL13C.glActiveTexture(GL13C.GL_TEXTURE0 + unit);
+        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
+    }
+
+    /** Transmittance, then multiple scattering: once (the atmosphere does not change). */
+    private static boolean buildStaticLuts() {
+        if (!drawLut(transmittance, TRANS_W, TRANS_H)) {
+            return false;
+        }
+        GL20C.glUseProgram(transmittanceProgram);
+        GlslPrograms.drawFullscreen();
+        if (!drawLut(multiScatter, MS_SIZE, MS_SIZE)) {
+            return false;
+        }
+        bind(13, transmittance);
+        GL20C.glUseProgram(multiScatterProgram);
+        GL20C.glUniform1i(GL20C.glGetUniformLocation(multiScatterProgram, "u_Transmittance"), 13);
+        GlslPrograms.drawFullscreen();
+        staticLuts = true;
+        return true;
+    }
+
+    private static boolean drawLut(int texture, int w, int h) {
+        GL30C.glBindFramebuffer(GL30C.GL_FRAMEBUFFER, fbo);
+        GL30C.glFramebufferTexture2D(GL30C.GL_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT0, GL11C.GL_TEXTURE_2D, texture, 0);
+        GL20C.glDrawBuffers(GL30C.GL_COLOR_ATTACHMENT0);
+        if (GL30C.glCheckFramebufferStatus(GL30C.GL_FRAMEBUFFER) != GL30C.GL_FRAMEBUFFER_COMPLETE) {
+            Stratos.LOGGER.error("[Atmosphera] Stratos sky look-up framebuffer incomplete; the sky is off");
+            compileFailed = true;
+            return false;
+        }
+        GL11C.glViewport(0, 0, w, h);
+        return true;
+    }
+
+    private static int lut(String name, int w, int h, boolean wrapS) {
+        int id = GpuResources.texture(name);
+        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
+        GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
+        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, id);
+        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_LINEAR);
+        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_LINEAR);
+        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_S, wrapS ? GL11C.GL_REPEAT : GL12C.GL_CLAMP_TO_EDGE);
+        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_T, GL12C.GL_CLAMP_TO_EDGE);
+        GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL30C.GL_RGBA16F, w, h, 0, GL11C.GL_RGBA, GL11C.GL_FLOAT, (ByteBuffer) null);
+        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
+        GL13C.glActiveTexture(previousUnit);
+        GpuResources.textureBytes(id, (long) w * h * 8);
+        return id;
+    }
+
+    private static boolean compile() {
+        String header = GlslPrograms.header();
+        transmittanceProgram = GlslPrograms.compile("Stratos sky transmittance", GlslPrograms.FULLSCREEN_VERTEX,
+                header + SkyGlsl.TRANSMITTANCE);
+        multiScatterProgram = GlslPrograms.compile("Stratos sky multiple scattering", GlslPrograms.FULLSCREEN_VERTEX,
+                header + SkyGlsl.MULTISCATTER);
+        skyViewProgram = GlslPrograms.compile("Stratos sky view", GlslPrograms.FULLSCREEN_VERTEX, header + SkyGlsl.SKYVIEW);
+        skyProgram = GlslPrograms.compile("Stratos sky", GlslPrograms.FULLSCREEN_VERTEX, header + SkyGlsl.SKY);
+        if (transmittanceProgram == 0 || multiScatterProgram == 0 || skyViewProgram == 0 || skyProgram == 0) {
+            Stratos.LOGGER.error("[Atmosphera] Stratos sky is off: a sky program did not compile (see above)");
+            release();
+            compileFailed = true;
+            return false;
+        }
+        viewU = locate(skyViewProgram, "u_Transmittance", "u_MultiScatter", "u_SkyCam");
+        skyU = locate(skyProgram, "u_Transmittance", "u_SkyView", "u_Noise", "u_PackSun", "u_PackMoon", "u_InvViewProj",
+                "u_SkyCam", "u_Sun", "u_Moon", "u_MoonPhase", "u_Stars", "u_Look", "u_Fog", "u_Time");
+        transmittance = lut("Stratos sky transmittance", TRANS_W, TRANS_H, false);
+        multiScatter = lut("Stratos sky multiple scattering", MS_SIZE, MS_SIZE, false);
+        skyView = lut("Stratos sky view", VIEW_W, VIEW_H, true);
+        fbo = GpuResources.framebuffer("Stratos sky look-up tables");
+        staticLuts = false;
+        lutSun = Float.NaN;
+        return true;
+    }
+
+    private static int[] locate(int program, String... names) {
+        int[] out = new int[names.length];
+        for (int i = 0; i < names.length; i++) {
+            out[i] = GL20C.glGetUniformLocation(program, names[i]);
+        }
+        return out;
+    }
+
+    /** Frees programs, tables and the framebuffer; the next frame rebuilds them. */
+    public static void release() {
+        for (int p : new int[] {transmittanceProgram, multiScatterProgram, skyViewProgram, skyProgram}) {
+            if (p != 0) {
+                GpuResources.deleteProgram(p);
+            }
+        }
+        transmittanceProgram = multiScatterProgram = skyViewProgram = skyProgram = 0;
+        for (int t : new int[] {transmittance, multiScatter, skyView}) {
+            if (t != 0) {
+                GpuResources.deleteTexture(t);
+            }
+        }
+        transmittance = multiScatter = skyView = 0;
+        if (fbo != 0) {
+            GpuResources.deleteFramebuffer(fbo);
+            fbo = 0;
+        }
+        staticLuts = false;
+        lutSun = Float.NaN;
+    }
+
+    private static float smoothstep(float a, float b, float x) {
+        float t = Math.max(0f, Math.min(1f, (x - a) / (b - a)));
+        return t * t * (3f - 2f * t);
+    }
+}

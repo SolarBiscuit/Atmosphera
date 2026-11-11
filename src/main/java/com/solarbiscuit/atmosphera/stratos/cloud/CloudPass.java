@@ -12,6 +12,7 @@ import com.solarbiscuit.atmosphera.lib.gpu.GpuTimers;
 import com.solarbiscuit.atmosphera.lib.gpu.PostPasses;
 import com.solarbiscuit.atmosphera.lib.gpu.RenderTargets;
 import com.solarbiscuit.atmosphera.lib.world.CloudCover;
+import com.solarbiscuit.atmosphera.lib.world.SkySource;
 import com.solarbiscuit.atmosphera.lib.world.SunSource;
 import com.solarbiscuit.atmosphera.stratos.Stratos;
 import com.solarbiscuit.atmosphera.stratos.StratosConfig;
@@ -59,6 +60,8 @@ public final class CloudPass {
 
     private static RenderTargets.Target low;
     private static RenderTargets.Target lowDepth;
+    /** 0.2.7: altocumulus and cirrus, outside the temporal history (RGBA16F: rgb light, a transmittance). */
+    private static RenderTargets.Target thinTarget;
     private static RenderTargets.History history;
     private static int lowDivisor;
     private static int mrtFbo;
@@ -68,7 +71,9 @@ public final class CloudPass {
     private static boolean fabulousLogged;
 
     private static final Vector3f LOOK = new Vector3f();
-    private static final int[] DRAW_BUFFERS = {GL30C.GL_COLOR_ATTACHMENT0, GL30C.GL_COLOR_ATTACHMENT1};
+    private static final float[] SKY = new float[3];
+    private static final int[] DRAW_BUFFERS = {GL30C.GL_COLOR_ATTACHMENT0, GL30C.GL_COLOR_ATTACHMENT1,
+            GL30C.GL_COLOR_ATTACHMENT2};
 
     private CloudPass() {
     }
@@ -180,10 +185,12 @@ public final class CloudPass {
             releaseTargets();
             // Linear filtering (0.2.5): the composite's fast path takes one bilinear fetch instead of four.
             low = RenderTargets.create("Stratos clouds", divisor, GL30C.GL_RGBA16F, true);
-            lowDepth = RenderTargets.create("Stratos cloud depth", divisor, GL30C.GL_RG16F, false);
+            // RGBA16F since 0.2.7: x low deck distance, y march limit, w all decks' transmittance (for Lumis).
+            lowDepth = RenderTargets.create("Stratos cloud depth", divisor, GL30C.GL_RGBA16F, false);
+            thinTarget = RenderTargets.create("Stratos thin clouds", divisor, GL30C.GL_RGBA16F, true);
             lowDivisor = divisor;
         }
-        if (!low.ensure(scene) || !lowDepth.ensure(scene)) {
+        if (!low.ensure(scene) || !lowDepth.ensure(scene) || !thinTarget.ensure(scene)) {
             return;
         }
         if (temporal) {
@@ -243,22 +250,26 @@ public final class CloudPass {
                 history.swap();
                 GpuTimers.end("stratos_resolve");
             }
-            output = clouds;
+            // Handed to other mods (CloudCover): the depth target's alpha holds every deck's transmittance this frame.
+            output = lowDepth.texture();
             outputFrame = frame;
 
             // 3. Composite over the scene colour (scene * T + light); the scene depth stays sampleable.
             GpuTimers.begin("stratos_composite");
             if (RenderTargets.bindColorOnly(scene)) {
                 bind(13, GL11C.GL_TEXTURE_2D, clouds);
-                bind(14, GL12C.GL_TEXTURE_3D, 0);
+                bind(14, GL11C.GL_TEXTURE_2D, thinTarget.texture());
                 bind(15, GL11C.GL_TEXTURE_2D, lowDepth.texture());
                 Program p = composite;
                 GL20C.glUseProgram(p.id());
                 GL20C.glUniform1i(p.u(0), 13);
-                GL20C.glUniform1i(p.u(1), 15);
-                GL20C.glUniform1i(p.u(2), 12);
-                GL20C.glUniformMatrix4fv(p.u(3), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
-                GL20C.glUniform4f(p.u(4), StratosConfig.farDistance.get(), StratosConfig.debug.get() > 0 ? 1f : 0f, 0f, 0f);
+                GL20C.glUniform1i(p.u(1), 14);
+                GL20C.glUniform1i(p.u(2), 15);
+                GL20C.glUniform1i(p.u(3), 12);
+                GL20C.glUniformMatrix4fv(p.u(4), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+                // z: from above the altocumulus the thin decks lie in front of the low deck.
+                GL20C.glUniform4f(p.u(5), StratosConfig.farDistance.get(), StratosConfig.debug.get() > 0 ? 1f : 0f,
+                        camera.y > StratosConfig.midHeight.get() ? 1f : 0f, 0f);
                 GL11C.glEnable(GL11C.GL_BLEND);
                 GL14C.glBlendFuncSeparate(GL11C.GL_ONE, GL11C.GL_SRC_ALPHA, GL11C.GL_ZERO, GL11C.GL_ONE);
                 GlslPrograms.drawFullscreen();
@@ -323,6 +334,8 @@ public final class CloudPass {
         GL30C.glFramebufferTexture2D(GL30C.GL_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT0, GL11C.GL_TEXTURE_2D, low.texture(), 0);
         GL30C.glFramebufferTexture2D(GL30C.GL_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT1, GL11C.GL_TEXTURE_2D,
                 lowDepth.texture(), 0);
+        GL30C.glFramebufferTexture2D(GL30C.GL_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT2, GL11C.GL_TEXTURE_2D,
+                thinTarget.texture(), 0);
         GL20C.glDrawBuffers(DRAW_BUFFERS);
         if (GL30C.glCheckFramebufferStatus(GL30C.GL_FRAMEBUFFER) != GL30C.GL_FRAMEBUFFER_COMPLETE) {
             Stratos.LOGGER.error("Stratos cloud framebuffer incomplete; clouds off");
@@ -413,10 +426,15 @@ public final class CloudPass {
             put(V_LIGHT_DIR, -sx, -sy, -sz, 0f);
             put(V_LIGHT_COL, 0.78f * moon, 0.86f * moon, moon, style.forward());
         }
-        Vec3 sky = level.getSkyColor(camera, partial);
+        // 0.3.0: the drawn sky's colour (Stratos's own sky through the lib's SkySource), else vanilla's.
+        if (!SkySource.skyColor(SKY)) {
+            Vec3 sky = level.getSkyColor(camera, partial);
+            SKY[0] = (float) sky.x;
+            SKY[1] = (float) sky.y;
+            SKY[2] = (float) sky.z;
+        }
         float[] fog = RenderSystem.getShaderFogColor();
-        put(V_AMB_TOP, (float) sky.x * 0.9f + 0.015f, (float) sky.y * 0.9f + 0.017f, (float) sky.z * 0.9f + 0.02f,
-                style.ambient());
+        put(V_AMB_TOP, SKY[0] * 0.9f + 0.015f, SKY[1] * 0.9f + 0.017f, SKY[2] * 0.9f + 0.02f, style.ambient());
         put(V_AMB_BOTTOM, fog[0] * 0.5f, fog[1] * 0.5f, fog[2] * 0.52f, style.powder());
         put(V_HAZE, fog[0], fog[1], fog[2], CloudWeather.darken);
 
@@ -465,7 +483,7 @@ public final class CloudPass {
                 + CloudGlsl.RESOLVE.replace("%REPROJECT%", PostPasses.REPROJECT_GLSL),
                 "u_Low", "u_LowDepth", "u_History", "u_InvViewProj", "u_Info");
         composite = Program.of("Stratos cloud composite", GlslPrograms.header() + CloudGlsl.COMPOSITE,
-                "u_Clouds", "u_LowDepth", "u_Depth", "u_InvViewProj", "u_Params");
+                "u_Clouds", "u_Thin", "u_LowDepth", "u_Depth", "u_InvViewProj", "u_Params");
         probe = Program.of("Stratos sun cover", GlslPrograms.header() + CloudGlsl.PROBE);
         shadow = Program.of("Stratos cloud shadow map", GlslPrograms.header() + CloudGlsl.SHADOW);
         if (march == null || resolve == null || composite == null || probe == null || shadow == null) {
@@ -482,8 +500,10 @@ public final class CloudPass {
         if (low != null) {
             low.release();
             lowDepth.release();
+            thinTarget.release();
             low = null;
             lowDepth = null;
+            thinTarget = null;
         }
         if (history != null) {
             history.release();

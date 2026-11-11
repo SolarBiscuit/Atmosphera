@@ -208,46 +208,53 @@ final class CloudGlsl {
             // The blended form at tile coordinates uv (0..1 cloud), and its albedo (neighbouring clumps differ in
             // brightness and thickness).
             float stratos_altoShape(vec2 uv, float lod, vec2 r, vec4 w, out float albedo) {
-                vec4 l = textureLod(u_LayerTex, uv, lod);
-                // A second cell sample at another scale and angle: clump size and brightness vary from cell to cell.
-                float c2 = textureLod(u_LayerTex, mat2(0.8, 0.6, -0.6, 0.8) * uv * 1.85 + vec2(0.21, 0.67), lod + 0.89).b;
+                // 0.2.7: a mid-frequency warp bends the cell lookup, so clumps become irregular lobes, not circles.
+                vec2 warp = (textureLod(u_LayerTex, uv * 2.7 + vec2(0.17, 0.53), lod + 1.4).ar - 0.5) * 0.05;
+                vec2 q = uv + warp;
+                vec4 l = textureLod(u_LayerTex, q, lod);
+                // Two more cell octaves at other scales and angles: clumps are built from sub-clumps (cauliflower
+                // edges), and size, thickness and brightness vary from clump to clump.
+                float c2 = textureLod(u_LayerTex, mat2(0.8, 0.6, -0.6, 0.8) * q * 1.85 + vec2(0.21, 0.67), lod + 0.89).b;
+                float c3 = textureLod(u_LayerTex, mat2(-0.5, 0.87, -0.87, -0.5) * q * 3.4 + vec2(0.71, 0.13), lod + 1.77).b;
+                // Fine fibres fray the edges.
+                float fray = textureLod(u_LayerTex, q * 4.1 + vec2(0.37, 0.91), lod + 2.0).r - 0.5;
+                float sub = mix(0.3, 0.6, r.y);
+                float k = mix(l.b, max(l.b, c2 * 0.95), sub) + (c3 - 0.5) * 0.22 - fray * 0.26;
+                float thick = mix(0.6, 1.4, c2);
                 float d = 0.0;
                 albedo = 0.0;
                 if (w.x > 0.011) {
                     float big = smoothstep(0.3, 0.7, l.a);
-                    float tuft = max(l.b * mix(1.0, 0.72, big), c2 * mix(0.72, 1.0, big));
-                    float f = smoothstep(0.42, 0.78, tuft - (l.r - 0.5) * 0.22) * mix(0.75, 1.15, c2);
+                    float f = smoothstep(0.40, 0.76, k * mix(1.0, 0.82, big)) * thick;
                     d += w.x * f;
                     albedo += w.x * mix(0.8, 1.1, c2);
                 }
                 if (w.y > 0.011) {
-                    // Rows turn and change their spacing from region to region.
+                    // Rows turn and change their spacing from region to region; the warp bends them too.
                     float angle = r.x * 2.4 + r.y * 1.3;
                     float rows = mix(30.0, 60.0, r.y);
-                    float phase = dot(uv, vec2(cos(angle), sin(angle))) * rows + l.a * 3.0;
+                    float phase = dot(q, vec2(cos(angle), sin(angle))) * rows + l.a * 3.0;
                     float ripple = 0.5 + 0.5 * sin(phase * 6.2831853);
-                    float f = smoothstep(0.35, 0.75, l.b * (0.55 + 0.45 * ripple)) * mix(0.8, 1.1, c2);
+                    float f = smoothstep(0.34, 0.74, k * (0.55 + 0.45 * ripple)) * mix(0.75, 1.2, c2);
                     d += w.y * f;
                     albedo += w.y * mix(0.85, 1.05, c2);
                 }
                 if (w.z > 0.011) {
-                    // Holes where the cells' centres are; thin, so the sky shows through.
-                    float holes = smoothstep(0.55, 0.85, l.b);
-                    d += w.z * (1.0 - holes) * smoothstep(0.3, 0.6, l.a) * 0.6;
+                    // Holes where the cells' centres are, frayed; thin, so the sky shows through.
+                    float holes = smoothstep(0.55, 0.85, l.b + fray * 0.3);
+                    d += w.z * (1.0 - holes) * smoothstep(0.3, 0.6, l.a) * 0.6 * mix(0.8, 1.2, c3);
                     albedo += w.z * 0.95;
                 }
                 if (w.w > 0.011) {
-                    // Long smooth lenses: the slow channel stretched along one direction.
-                    vec2 luv = mat2(0.6, -0.8, 0.8, 0.6) * uv;
+                    // Long lenses: the slow channel stretched along one direction, warped and frayed.
+                    vec2 luv = mat2(0.6, -0.8, 0.8, 0.6) * q;
                     float lens = textureLod(u_LayerTex, vec2(luv.x * 0.15, luv.y * 0.6) + vec2(0.4, 0.9), lod).a;
-                    d += w.w * smoothstep(0.56, 0.78, lens) * 0.9;
+                    d += w.w * smoothstep(0.56, 0.8, lens - fray * 0.12) * 0.9;
                     albedo += w.w * 1.05;
                 }
                 return d;
             }
 
-            // Altocumulus: optical thickness at xz on the mid deck; in rain (stratiform weight) it melts into a smooth
-            // altostratus veil. Tile coordinates, region, weights and albedo go out for the shading sample.
             float stratos_alto(vec2 xz, float lod, out vec2 uvOut, out vec2 rOut, out vec4 wOut, out float albedo) {
                 vec2 uv = xz * u_Scale.z * 3.0 + u_WeatherOff.xy * 3.0;
                 uvOut = uv;
@@ -265,7 +272,10 @@ final class CloudGlsl {
             // sheet (stretched at grazing angles) in texels. Explicit, because the sheets are evaluated in branches.
             float stratos_sheetLod(float t, float slope, float tileScale) {
                 float footprint = t * u_Forward.w / sqrt(max(slope, 0.02));
-                return log2(max(footprint * tileScale * 512.0, 1.0));
+                // 0.2.7: half a level sharper: the thin decks no longer pass through the temporal resolve.
+                // 0.3.0: a quarter level sharper than the matched level (0.2.7 took half a level, which with the
+                // thresholds aliased into stair-steps once magnified); the composite now upsamples them smoothly.
+                return max(log2(max(footprint * tileScale * 512.0, 1.0)) - 0.25, 0.0);
             }
 
             float stratos_hg(float mu, float g) {
@@ -302,8 +312,9 @@ final class CloudGlsl {
      */
     static final String MARCH = COMMON + """
             in vec2 v_Uv;
-            layout(location = 0) out vec4 fragColor;  // rgb in-scattered light (premultiplied), a transmittance
-            layout(location = 1) out vec4 fragDepth;  // x cloud distance (for reprojection), y march limit
+            layout(location = 0) out vec4 fragColor;  // low deck: rgb in-scattered light (premultiplied), a transmittance
+            layout(location = 1) out vec4 fragDepth;  // x low deck distance (reprojection), y march limit, w all decks' T
+            layout(location = 2) out vec4 fragThin;   // 0.2.7: altocumulus + cirrus (no temporal history): rgb, a T
 
 
             vec3 stratos_ambient(float h) {
@@ -384,6 +395,13 @@ final class CloudGlsl {
             // A thin layer at height h: (rgb light, a transmittance); t is where the ray meets it.
             vec4 stratos_sheet(float h, vec3 dir, float tMax, bool cirrus, out float t) {
                 t = stratos_plane(h, dir);
+                if (!cirrus && t > 0.0) {
+                    // 0.2.7: the altocumulus layer rises and sinks by up to 120 blocks from region to region; one
+                    // refinement of the plane at the height found at the first hit.
+                    vec2 r0 = stratos_altoRegion((dir * t).xz * u_Scale.z * 3.0 + u_WeatherOff.xy * 3.0);
+                    float lift = clamp((r0.x * 0.6 + r0.y * 0.4 - 0.5) * 480.0, -120.0, 120.0);
+                    t = stratos_plane(h + lift, dir);
+                }
                 if (t < 0.0 || t > tMax) {
                     return vec4(0.0, 0.0, 0.0, 1.0);
                 }
@@ -474,30 +492,25 @@ final class CloudGlsl {
                 mid = stratos_haze(mid, tMid);
                 high = stratos_haze(high, tHigh);
 
-                // Front to back. From below the order is low, mid, high; from above the decks the reverse.
-                vec4 a = low;
+                // 0.2.7: the thin decks go to their own target, outside the temporal resolve (they are analytic, with no
+                // noise to accumulate, and reprojecting them by the low deck's distance smeared them in motion). The
+                // composite puts them behind the low deck, or in front of it when the camera is above the mid deck.
                 vec4 b = mid;
                 vec4 c = high;
-                float ta = tLow < 0.0 ? STRATOS_BIG : tLow;
-                float tb = tMid < 0.0 ? STRATOS_BIG : tMid;
-                float tc = tHigh < 0.0 ? STRATOS_BIG : tHigh;
-                if (tb < ta) { vec4 x = a; a = b; b = x; float y = ta; ta = tb; tb = y; }
-                if (tc < tb) { vec4 x = b; b = c; c = x; float y = tb; tb = tc; tc = y; }
-                if (tb < ta) { vec4 x = a; a = b; b = x; float y = ta; ta = tb; tb = y; }
-                vec3 light = a.rgb + a.a * (b.rgb + b.a * c.rgb);
-                float trans = a.a * b.a * c.a;
-
-                vec3 grade = u_Tint.rgb * u_Tint.w;
-                light *= grade;
-
-                float dist = ta < STRATOS_BIG * 0.5 ? ta : tMax;
-                if (tLow > 0.0 && low.a < 0.98) {
-                    dist = tLow;
+                if (tHigh >= 0.0 && (tMid < 0.0 || tHigh < tMid)) {
+                    b = high;
+                    c = mid;
                 }
+                vec4 thin = vec4(b.rgb + b.a * c.rgb, b.a * c.a);
+                vec3 grade = u_Tint.rgb * u_Tint.w;
+                vec3 light = low.rgb * grade;
+                float trans = low.a;
+                thin.rgb *= grade;
+                float dist = tLow > 0.0 && low.a < 0.98 ? tLow : tMax;
                 if (u_Flags.z > 0.5) {
                     int view = int(u_Flags.z + 0.5);
                     if (view == 1) {
-                        light = vec3(1.0 - trans);
+                        light = vec3(1.0 - trans * thin.a);
                     } else if (view == 2) {
                         light = vec3(tMax / u_Camera.y);
                     } else {
@@ -505,9 +518,11 @@ final class CloudGlsl {
                         light = seg.x < seg.y ? vec3(stratos_weather(dir.xz * seg.x).x) : vec3(0.0, 0.0, 0.2);
                     }
                     trans = 0.0;
+                    thin = vec4(0.0, 0.0, 0.0, 1.0);
                 }
+                fragThin = thin;
                 fragColor = vec4(light, trans);
-                fragDepth = vec4(dist, tMax, 0.0, 1.0);
+                fragDepth = vec4(dist, tMax, 0.0, trans * thin.a);
             }
             """;
 
@@ -568,12 +583,34 @@ final class CloudGlsl {
     /** Full-resolution composite: depth-aware upsample of the clouds over the scene (blend ONE, SRC_ALPHA). */
     static final String COMPOSITE = """
             uniform sampler2D u_Clouds;
+            uniform sampler2D u_Thin;
             uniform sampler2D u_LowDepth;
             uniform sampler2D u_Depth;
             uniform mat4 u_InvViewProj;
-            uniform vec4 u_Params;   // x far distance, y debug view
+            uniform vec4 u_Params;   // x far distance, y debug view, z 1 when the thin decks are in front of the low deck
             in vec2 v_Uv;
             out vec4 fragColor;
+
+            // 0.3.0: cubic B-spline upsample from four bilinear taps, for the thin decks. Their thresholded shapes,
+            // magnified bilinearly from the march resolution, showed stair-steps along every edge.
+            vec4 stratos_bspline(sampler2D tex, vec2 uv) {
+                vec2 size = vec2(textureSize(tex, 0));
+                vec2 st = uv * size - 0.5;
+                vec2 i = floor(st);
+                vec2 f = st - i;
+                vec2 f2 = f * f;
+                vec2 f3 = f2 * f;
+                vec2 w0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) / 6.0;
+                vec2 w1 = (4.0 - 6.0 * f2 + 3.0 * f3) / 6.0;
+                vec2 w2 = (1.0 + 3.0 * f + 3.0 * f2 - 3.0 * f3) / 6.0;
+                vec2 w3 = f3 / 6.0;
+                vec2 g0 = w0 + w1;
+                vec2 g1 = w2 + w3;
+                vec2 h0 = (i - 0.5 + w1 / g0) / size;
+                vec2 h1 = (i + 1.5 + w3 / g1) / size;
+                return g0.y * (g0.x * textureLod(tex, h0, 0.0) + g1.x * textureLod(tex, vec2(h1.x, h0.y), 0.0))
+                        + g1.y * (g0.x * textureLod(tex, vec2(h0.x, h1.y), 0.0) + g1.x * textureLod(tex, h1, 0.0));
+            }
 
             vec3 stratos_shoulder(vec3 c) {
                 vec3 over = max(c - 0.8, 0.0);
@@ -593,7 +630,9 @@ final class CloudGlsl {
                 // 0.2.4 fast path 1 (one bilinear fetch since 0.2.5): no cloud in any of the four taps (most terrain,
                 // clear sky): nothing to blend.
                 vec4 bilinear = textureLod(u_Clouds, v_Uv, 0.0);
-                if (!debug && bilinear.a > 0.998 && max(bilinear.r, max(bilinear.g, bilinear.b)) < 0.002) {
+                vec4 thinBilinear = textureLod(u_Thin, v_Uv, 0.0);
+                if (!debug && bilinear.a > 0.998 && max(bilinear.r, max(bilinear.g, bilinear.b)) < 0.002
+                        && thinBilinear.a > 0.998 && max(thinBilinear.r, max(thinBilinear.g, thinBilinear.b)) < 0.002) {
                     discard;
                 }
                 vec4 limits = vec4(texelFetch(u_LowDepth, p00, 0).y, texelFetch(u_LowDepth, p10, 0).y,
@@ -601,10 +640,13 @@ final class CloudGlsl {
                 float lo = min(min(limits.x, limits.y), min(limits.z, limits.w));
                 float hi = max(max(limits.x, limits.y), max(limits.z, limits.w));
                 vec4 c;
+                vec4 thin;
                 if (hi <= lo * 1.02 + 0.5) {
                     // 0.2.4 fast path 2: the four taps march to the same distance, so there is no silhouette here and
                     // the plain bilinear blend is exact enough: no full-resolution depth, no weights.
                     c = bilinear;
+                    bool thinEmpty = thinBilinear.a > 0.998 && max(thinBilinear.r, max(thinBilinear.g, thinBilinear.b)) < 0.002;
+                    thin = thinEmpty ? thinBilinear : stratos_bspline(u_Thin, v_Uv);
                 } else {
                     vec4 c00 = texelFetch(u_Clouds, p00, 0);
                     vec4 c10 = texelFetch(u_Clouds, p10, 0);
@@ -627,12 +669,24 @@ final class CloudGlsl {
                     vec4 wb = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
                     vec4 w = wb * exp(-(errs - vec4(nearestErr)) * 30.0);
                     float wsum = w.x + w.y + w.z + w.w;
+                    vec4 t00 = texelFetch(u_Thin, p00, 0);
+                    vec4 t10 = texelFetch(u_Thin, p10, 0);
+                    vec4 t01 = texelFetch(u_Thin, p01, 0);
+                    vec4 t11 = texelFetch(u_Thin, p11, 0);
                     if (wsum > 1e-4) {
                         c = (c00 * w.x + c10 * w.y + c01 * w.z + c11 * w.w) / wsum;
+                        thin = (t00 * w.x + t10 * w.y + t01 * w.z + t11 * w.w) / wsum;
                     } else {
-                        c = errs.x == nearestErr ? c00 : errs.y == nearestErr ? c10 : errs.z == nearestErr ? c01 : c11;
+                        bool n0 = errs.x == nearestErr;
+                        bool n1 = errs.y == nearestErr;
+                        bool n2 = errs.z == nearestErr;
+                        c = n0 ? c00 : n1 ? c10 : n2 ? c01 : c11;
+                        thin = n0 ? t00 : n1 ? t10 : n2 ? t01 : t11;
                     }
                 }
+                // Low deck and thin decks in their order along the view.
+                c = u_Params.z > 0.5 ? vec4(thin.rgb + thin.a * c.rgb, thin.a * c.a)
+                        : vec4(c.rgb + c.a * thin.rgb, c.a * thin.a);
                 if (debug) {
                     fragColor = vec4(c.rgb, 0.0);
                     return;
