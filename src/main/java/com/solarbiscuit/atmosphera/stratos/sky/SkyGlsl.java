@@ -193,7 +193,7 @@ final class SkyGlsl {
                 float muS = u_SkyCam.y;
                 vec3 sun = vec3(sqrt(max(0.0, 1.0 - muS * muS)), muS, 0.0);
                 // Elevation: denser near the horizon (square-root mapping), relative to the true horizon at this height.
-                float horizon = -acos(clamp(sqrt(max(r * r - SKY_RG * SKY_RG, 0.0)) / r, -1.0, 1.0));
+                float horizon = -asin(clamp(sqrt(max(r * r - SKY_RG * SKY_RG, 0.0)) / r, 0.0, 1.0)); // the true horizon, just below level
                 float v = v_Uv.y;
                 float lat = v < 0.5 ? -(1.0 - 2.0 * v) * (1.0 - 2.0 * v) : (2.0 * v - 1.0) * (2.0 * v - 1.0);
                 float elevation = lat * (SKY_PI * 0.5) + horizon;
@@ -244,10 +244,13 @@ final class SkyGlsl {
             uniform vec4 u_Sun;       // xyz towards the sun (world), w angular radius (radians)
             uniform vec4 u_Moon;      // xyz towards the moon, w angular radius
             uniform vec4 u_MoonPhase; // x phase angle (0 full .. pi new), y brightness, z pack textures (1), w phase index
-            uniform vec4 u_Stars;     // x brightness, y Milky Way, z celestial rotation (radians), w airglow
+            uniform vec4 u_Stars;     // x brightness, y Milky Way, z/w cosine/sine of the celestial rotation
             uniform vec4 u_Look;      // x saturation, y horizon blend (radians), z rain, w thunder
             uniform vec4 u_Fog;       // rgb fog colour (the game's, biome tinted), w pixel angle
-            uniform vec4 u_Time;      // x seconds
+            uniform vec4 u_Look2;     // x airglow, y star amount, z 0..1 camera above the cloud deck
+            uniform vec4 u_Map;       // 0.4.0: x 1 = draw the sky-view map (lib SkyView layout), y 1 = a cloud map is bound
+            uniform sampler2D u_CloudMap;
+            uniform vec4 u_Time;      // x seconds, y/z cosines of the sun's/moon's early-out angles, w horizon (radians)
             in vec2 v_Uv;
             out vec4 fragColor;
 
@@ -257,29 +260,51 @@ final class SkyGlsl {
                 return fract((p.x + p.y) * p.z);
             }
 
+            // 0.3.3: polynomial arcsine and arctangent (the built-ins were most of the pass's cost at 1440p).
+            // Arcsine after Abramowitz and Stegun 4.4.45, error under 7e-5 rad.
+            float sky_asin(float x) {
+                float a = abs(x);
+                float r = 1.5707963 - sqrt(max(1.0 - a, 0.0)) * (1.5707288 + a * (-0.2121144 + a * (0.0742610 - 0.0187293 * a)));
+                return x < 0.0 ? -r : r;
+            }
+
+            // Arctangent of y/x over the full circle, error about 1e-5 rad.
+            float sky_atan2(float y, float x) {
+                float ax = abs(x);
+                float ay = abs(y);
+                float a = min(ax, ay) / max(max(ax, ay), 1e-8);
+                float s = a * a;
+                float r = ((-0.0464964749 * s + 0.15931422) * s - 0.327622764) * s * a + a;
+                r = ay > ax ? 1.57079637 - r : r;
+                r = x < 0.0 ? 3.14159274 - r : r;
+                return y < 0.0 ? -r : r;
+            }
+
             vec3 sky_lut(vec3 dir) {
-                float r = u_SkyCam.x;
-                float horizon = -acos(clamp(sqrt(max(r * r - SKY_RG * SKY_RG, 0.0)) / r, -1.0, 1.0));
-                float elevation = asin(clamp(dir.y, -1.0, 1.0)) - horizon;
+                // u_Time.w: the true horizon's elevation at the camera's height (just below level), from Java.
+                float elevation = sky_asin(clamp(dir.y, -1.0, 1.0)) - u_Time.w;
                 float lat = clamp(elevation / (SKY_PI * 0.5), -1.0, 1.0);
                 float v = lat < 0.0 ? 0.5 - 0.5 * sqrt(-lat) : 0.5 + 0.5 * sqrt(lat);
-                float azimuth = atan(dir.z, dir.x) - u_SkyCam.z;
+                float azimuth = sky_atan2(dir.z, dir.x) - u_SkyCam.z;
                 float u = fract(azimuth / (2.0 * SKY_PI));
                 return texture(u_SkyView, vec2(u, v)).rgb;
             }
 
             vec3 sky_stars(vec3 dir, float night) {
-                if (night < 0.01 || u_Stars.x <= 0.0) {
+                if (night < 0.01 || u_Stars.x <= 0.0 || u_Look2.y <= 0.0) {
                     return vec3(0.0);
                 }
                 // Celestial frame: the sky turns with the sun about the world's z axis, as vanilla's sun and stars do
                 // (the sun's direction is fixed in this frame).
-                float a = u_Stars.z;
-                vec3 c = vec3(dir.x * cos(a) + dir.y * sin(a), -dir.x * sin(a) + dir.y * cos(a), dir.z);
+                // u_Stars.z, w: cosine and sine of the celestial rotation (from Java, not per pixel).
+                float ca = u_Stars.z;
+                float sa = u_Stars.w;
+                vec3 c = vec3(dir.x * ca + dir.y * sa, -dir.x * sa + dir.y * ca, dir.z);
                 vec3 cell = floor(c * 160.0);
                 float h = sky_hash(cell);
                 vec3 star = vec3(0.0);
-                if (h > 0.93) {
+                // 0.6.0: the star amount sets the share of cells holding a star (7% at 100%, at most 25%).
+                if (h > 1.0 - min(0.07 * u_Look2.y, 0.25)) {
                     vec3 centre = (cell + 0.5 + (vec3(sky_hash(cell + 1.7), sky_hash(cell + 3.1), sky_hash(cell + 5.3)) - 0.5) * 0.6) / 160.0;
                     // Squared angle from the chord (no acos): |a - b|^2 = 2 (1 - cos) ~ angle^2 for small angles.
                     vec3 toStar = normalize(centre) - c;
@@ -298,7 +323,7 @@ final class SkyGlsl {
                 float band = exp(-across * across / 0.018) * u_Stars.y;
                 vec3 milky = vec3(0.0);
                 if (band > 0.01) {
-                    vec2 suv = vec2(atan(c.z, c.x) / (2.0 * SKY_PI), c.y) * vec2(3.0, 1.5);
+                    vec2 suv = vec2(sky_atan2(c.z, c.x) / (2.0 * SKY_PI), c.y) * vec2(3.0, 1.5);
                     float mottle = textureLod(u_Noise, suv, 0.0).a * 0.6 + textureLod(u_Noise, suv * 3.1, 0.0).b * 0.4;
                     milky = vec3(0.55, 0.6, 0.75) * band * smoothstep(0.35, 0.8, mottle) * 0.05;
                 }
@@ -327,7 +352,7 @@ final class SkyGlsl {
                     }
                     float idx = u_MoonPhase.w;
                     vec2 cellUv = vec2(mod(idx, 4.0), floor(idx / 4.0)) * vec2(0.25, 0.5);
-                    vec4 tex = texture(u_PackMoon, cellUv + (q * vec2(0.5, -0.5) + 0.5) * vec2(0.25, 0.5));
+                    vec4 tex = textureLod(u_PackMoon, cellUv + (q * vec2(0.5, -0.5) + 0.5) * vec2(0.25, 0.5), 0.0);
                     return tex.rgb * tex.a * 1.2;
                 }
                 float rr = dot(d, d);
@@ -338,8 +363,11 @@ final class SkyGlsl {
                 vec3 normal = vec3(d, sqrt(1.0 - rr));
                 float phase = u_MoonPhase.x;
                 vec3 light = vec3(sin(phase), 0.0, cos(phase));
-                float craters = texture(u_Noise, d * 0.35 + vec2(0.31, 0.47)).b;
-                float maria = smoothstep(0.42, 0.62, texture(u_Noise, d * 0.12 + vec2(0.7, 0.2)).a);
+                // Explicit mip levels: texels of the layer texture per screen pixel across the disc.
+                float perPixel = 512.0 * u_Fog.w / sin(rad);
+                float craters = textureLod(u_Noise, d * 0.35 + vec2(0.31, 0.47), log2(max(perPixel * 0.35, 1.0))).b;
+                float maria = smoothstep(0.42, 0.62,
+                        textureLod(u_Noise, d * 0.12 + vec2(0.7, 0.2), log2(max(perPixel * 0.12, 1.0))).a);
                 vec3 albedo = vec3(0.92, 0.9, 0.86) * (0.78 + 0.22 * craters) * (1.0 - 0.32 * maria);
                 float lit = max(dot(normal, light), 0.0);
                 // The lit part is as bright at a crescent as at full moon; earthshine on the dark side; a soft
@@ -367,7 +395,7 @@ final class SkyGlsl {
                     vec3 sunN = cross(u_Sun.xyz, sunE);
                     vec2 d = vec2(dot(dir, sunE), dot(dir, sunN)) / sin(rad * 2.0);
                     if (all(lessThan(abs(d), vec2(1.0)))) {
-                        vec4 tex = texture(u_PackSun, d * 0.5 + 0.5);
+                        vec4 tex = textureLod(u_PackSun, d * 0.5 + 0.5, 0.0);
                         disc = tex.rgb * tex.a * tint * fade;
                     }
                     return disc;
@@ -387,11 +415,29 @@ final class SkyGlsl {
             }
 
             void main() {
-                vec4 far = u_InvViewProj * vec4(v_Uv * 2.0 - 1.0, 1.0, 1.0);
-                vec3 dir = normalize(far.xyz / far.w);
+                bool mapMode = u_Map.x > 0.5;
+                vec3 dir;
+                if (mapMode) {
+                    // The sky-view map: u world azimuth, v = sqrt(elevation / (pi / 2)).
+                    float mapAz = (v_Uv.x - 0.5) * 6.2831853;
+                    float mapEl = v_Uv.y * v_Uv.y * 1.5707963;
+                    dir = vec3(cos(mapEl) * cos(mapAz), max(sin(mapEl), 0.002), cos(mapEl) * sin(mapAz));
+                } else {
+                    vec4 far = u_InvViewProj * vec4(v_Uv * 2.0 - 1.0, 1.0, 1.0);
+                    dir = normalize(far.xyz / far.w);
+                }
+                // 0.6.0: above the cloud deck the ground's fog (dark in storms) does not belong at the horizon; the sky's own
+                // horizon colour takes its place (a uniform branch: only while flying over the clouds).
+                vec3 fogC = u_Fog.rgb;
+                if (u_Look2.z > 0.0) {
+                    vec3 hz = sky_lut(normalize(vec3(dir.x, 0.01, dir.z)));
+                    hz = pow(vec3(1.0) - exp(-hz * u_SkyCam.w), vec3(1.0 / 2.2));
+                    fogC = mix(fogC, sky_saturate(hz, u_Look.x) * 0.9, u_Look2.z);
+                }
                 if (dir.y <= 0.0) {
                     // At and below the horizon the sky is all fog colour, darkening into the void (as below).
-                    fragColor = vec4(u_Fog.rgb * mix(1.0, 0.7, smoothstep(0.0, -0.3, dir.y)), 1.0);
+                    float voidDark = mix(1.0, 0.7, smoothstep(0.0, -0.3, dir.y) * (1.0 - u_Look2.z));
+                    fragColor = vec4(fogC * voidDark, 1.0);
                     return;
                 }
                 vec3 sunT = sky_transmittance(u_SkyCam.x, u_Sun.y);
@@ -402,22 +448,38 @@ final class SkyGlsl {
                 // Linear light to the screen: exposure (raised in twilight, as eyes adapt), a soft shoulder, display
                 // gamma. Everything after this is in the game's display values (like the fog colour).
                 vec3 col = pow(vec3(1.0) - exp(-lum * u_SkyCam.w), vec3(1.0 / 2.2));
-                col = max(col, sky_sun(dir, sunT) * (1.0 - 0.8 * rain));
+                if (!mapMode) {
+                    col = max(col, sky_sun(dir, sunT) * (1.0 - 0.8 * rain));
+                }
                 // Night: the model's sky goes black; a dim moonlit blue, airglow and the stars take over.
                 float night = 1.0 - smoothstep(-0.18, 0.02, u_Sun.y);
-                vec3 nightSky = vec3(0.010, 0.014, 0.030) * (0.35 + 0.65 * u_MoonPhase.y);
-                float above = max(dir.y, 0.0);
-                vec3 airglow = mix(vec3(0.010, 0.016, 0.006), vec3(0.012, 0.008, 0.003), above) * exp(-above * 6.0) * u_Stars.w;
-                col += (nightSky * (0.6 + 0.4 * (1.0 - above)) + airglow) * night;
-                col += sky_stars(dir, night);
+                if (night > 0.001) {
+                    // A uniform branch: by day none of this runs.
+                    vec3 nightSky = vec3(0.010, 0.014, 0.030) * (0.35 + 0.65 * u_MoonPhase.y);
+                    float above = max(dir.y, 0.0);
+                    vec3 airglow = mix(vec3(0.010, 0.016, 0.006), vec3(0.012, 0.008, 0.003), above) * exp(-above * 6.0) * u_Look2.x;
+                    col += (nightSky * (0.6 + 0.4 * (1.0 - above)) + airglow) * night;
+                    if (!mapMode) {
+                        col += sky_stars(dir, night);
+                    }
+                }
                 // By day the moon is pale (the sky's light lies over it).
-                col += sky_moon(dir, night) * (1.0 - 0.7 * rain) * mix(0.3, 1.0, night);
+                if (!mapMode) {
+                    col += sky_moon(dir, night) * (1.0 - 0.7 * rain) * mix(0.3, 1.0, night);
+                }
                 col = sky_saturate(col, u_Look.x);
+                if (mapMode && u_Map.y > 0.5) {
+                    // Clouds in the map (Stratos's cloud map, the same layout): sky * T + light, with the clouds'
+                    // composite shoulder.
+                    vec4 cm = textureLod(u_CloudMap, v_Uv, 0.0);
+                    vec3 over = max(cm.rgb - 0.8, 0.0);
+                    col = col * cm.a + min(cm.rgb, vec3(0.8)) + 0.2 * (1.0 - exp(-over / 0.2));
+                }
                 // The horizon fades into the game's fog colour, so terrain fog meets the sky without a seam; below
                 // the horizon the void darkens as in vanilla.
                 float elev = dir.y;
                 float blend = 1.0 - smoothstep(0.0, max(u_Look.y, 1e-3), elev);
-                col = mix(col, u_Fog.rgb, blend);
+                col = mix(col, fogC, blend);
                 col *= mix(1.0, 0.7, smoothstep(0.0, -0.3, elev));
                 fragColor = vec4(col, 1.0);
             }

@@ -1,0 +1,13 @@
+{
+  "biomes": [
+    "minecraft:desert",
+    "#forge:is_desert",
+    "#forge:is_sandy"
+  ],
+  "priority": 15,
+  "fog_color": "#D9C29A",
+  "tint": 0.35,
+  "fog_distance": 0.9,
+  "haze": 1.5,
+  "mist": 0.1
+}

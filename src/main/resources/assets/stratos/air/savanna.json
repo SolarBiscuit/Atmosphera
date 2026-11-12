@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "#minecraft:is_savanna"
+  ],
+  "priority": 12,
+  "fog_color": "#D4C7A2",
+  "tint": 0.25,
+  "fog_distance": 1.0,
+  "haze": 1.25,
+  "mist": 0.3
+}

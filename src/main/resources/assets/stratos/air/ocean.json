@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "#minecraft:is_ocean"
+  ],
+  "priority": 8,
+  "fog_color": "#94B4D6",
+  "tint": 0.2,
+  "fog_distance": 1.05,
+  "haze": 1.2,
+  "mist": 1.0
+}

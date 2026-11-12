@@ -46,6 +46,18 @@ public final class CloudWeather {
     static float highCover;
     static float hazeDistance;
 
+    /** 0.5.0: the surface wind's direction (unit, xz) for anvils, shelf clouds, rain shafts and orographic lift. */
+    static float windX = 1f;
+    static float windZ;
+
+    static float dryness() {
+        return Math.max(0f, dryness);
+    }
+
+    static float coldness() {
+        return Math.max(0f, coldness);
+    }
+
     private static final WindVector WIND = new WindVector();
     private static ClientLevel lastLevel;
 
@@ -104,6 +116,11 @@ public final class CloudWeather {
         // Drift: the low deck with the surface wind; the high deck faster and turned (wind shear aloft).
         Wind.global(level, partialTick, WIND);
         float speed = (float) (1.5 + 6.0 * WIND.strength + 3.0 * WIND.gust) * StratosConfig.drift.get().floatValue();
+        float windLen = (float) Math.sqrt(WIND.dirX * WIND.dirX + WIND.dirZ * WIND.dirZ);
+        if (windLen > 1e-4f) {
+            windX = (float) (WIND.dirX / windLen);
+            windZ = (float) (WIND.dirZ / windLen);
+        }
         lowX += WIND.dirX * speed * dt;
         lowZ += WIND.dirZ * speed * dt;
         float shear = StratosConfig.shear.get().floatValue();

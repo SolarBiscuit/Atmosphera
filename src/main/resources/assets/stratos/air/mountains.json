@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "#minecraft:is_mountain"
+  ],
+  "priority": 9,
+  "fog_color": "#C9D3E0",
+  "tint": 0.15,
+  "fog_distance": 1.1,
+  "haze": 0.75,
+  "mist": 0.8
+}

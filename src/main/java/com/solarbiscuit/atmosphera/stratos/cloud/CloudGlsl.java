@@ -36,6 +36,11 @@ final class CloudGlsl {
             uniform vec4 u_Haze;       // rgb haze colour, w darkening in rain
             uniform vec4 u_Tint;       // rgb tint, w brightness
             uniform vec4 u_March;      // 0.2.0 toggles: x 1/z near steps, z third octave (y, w unused)
+            uniform vec4 u_Storm;      // 0.5.0: x storm strength (towers), yz wind direction (xz), w rain shafts
+            uniform vec4 u_Flash;      // 0.5.0: xyz lightning flash (camera-relative), w intensity
+            uniform vec4 u_RegionOff;  // 0.5.0: xy region map centre minus camera, z 1 / map size, w 1 while valid
+            uniform vec4 u_Local;      // 0.5.0: x camera dryness, y camera coldness, z storm features on
+            uniform sampler2D u_Region; // r dryness, g coldness, b orographic lift (0.5 = none)
 
             const float STRATOS_BIG = 1e9;
             const float STRATOS_NEAR_BAND = 2200.0;
@@ -102,15 +107,87 @@ final class CloudGlsl {
                 return r.y > 0.0 && r.y < STRATOS_BIG * 0.5 ? r.y : -1.0;
             }
 
-            // Local coverage (x, 0..1) and cloud type (y) of the low deck at camera-relative xz. The coverage varies
-            // smoothly around the deck's mean (0.1.1: no longer a mask that saturates to 1, which made solid layers).
-            vec2 stratos_weather(vec2 xz) {
+            // 0.5.0: the regional map at camera-relative xz: dryness, coldness, orographic lift (-1..1). Outside the
+            // map (or before it is filled) the camera's own values and no lift.
+            vec3 stratos_region(vec2 xz) {
+                if (u_RegionOff.w < 0.5) {
+                    return vec3(u_Local.x, u_Local.y, 0.0);
+                }
+                // 0.6.2: the lookup wanders by up to ~100 blocks with the drifting weather noise, so the map's cells
+                // never draw a straight border in the deck.
+                vec2 warp = textureLod(u_Weather, xz * u_Scale.z * 0.37 + u_WeatherOff.xy + vec2(0.41, 0.13), 0.0).rg;
+                xz += (warp - 0.5) * 200.0;
+                vec2 uv = (xz - u_RegionOff.xy) * u_RegionOff.z + 0.5;
+                vec2 edge = abs(uv - 0.5) * 2.0;
+                float fade = smoothstep(0.8, 1.0, max(edge.x, edge.y));
+                vec3 r = textureLod(u_Region, clamp(uv, 0.0, 1.0), 0.0).rgb;
+                return mix(vec3(r.xy, r.z * 2.0 - 1.0), vec3(u_Local.x, u_Local.y, 0.0), fade);
+            }
+
+            // 0.5.0 cost: the regional values are taken once per ray (the cells are 64 blocks and the field is smooth),
+            // and the light march skips the storm extras. Set by the callers; the defaults are the camera's values.
+            vec3 stratos_rayRegion = vec3(-1.0);
+            bool stratos_cheap = false;
+            // 0.6.2: how much of the last stratos_density sample was shelf cloud (0..1). The cheap light march skips
+            // the storm extras, so the march shades the shelf itself: it stands in the storm's shadow.
+            float stratos_shelfShare = 0.0;
+
+            // Local coverage (x, 0..1), cloud type (y), local stratiform weight (z) and orographic lift (w) of the low
+            // deck at camera-relative xz. The coverage varies smoothly around the deck's mean (0.1.1: no longer a mask
+            // that saturates to 1, which made solid layers). 0.5.0: the biome of the place, not only the camera's, sets
+            // the amount and kind (the deck's mean already holds the camera's), and terrain rising into the wind adds
+            // cloud while its lee side thins it.
+            vec4 stratos_weatherEx(vec2 xz) {
                 vec4 w = textureLod(u_Weather, xz * u_Scale.z + u_WeatherOff.xy, 0.0);
                 float c = u_Deck.z;
+                float strat = u_Type.x;
+                float lift = 0.0;
+                if (u_Local.z > 0.5) {
+                    vec3 reg = stratos_rayRegion.x >= 0.0 ? stratos_rayRegion : vec3(u_Local.x, u_Local.y, 0.0);
+                    c *= (1.0 - 0.55 * reg.x) / max(1.0 - 0.55 * u_Local.x, 0.2);
+                    strat = clamp(strat + (reg.y - u_Local.y) * 0.35, 0.0, 1.0);
+                    lift = reg.z;
+                    c = clamp(c + lift * 0.22 * smoothstep(0.05, 0.3, c + 0.1), 0.0, 1.0);
+                }
                 // The variation fades out towards 0%, so no amount means no clouds.
                 float lc = clamp(c + (w.r - 0.5) * 1.3 * smoothstep(0.0, 0.25, c), 0.0, 1.0);
                 lc = max(lc, smoothstep(0.9, 1.0, c));
-                return vec2(lc, w.g);
+                return vec4(lc, w.g, strat, lift);
+            }
+
+            vec2 stratos_weather(vec2 xz) {
+                return stratos_weatherEx(xz).xy;
+            }
+
+            // A position anchored to the drifting low deck (blocks, within one weather tile), for patterns that must not
+            // follow the camera (mammatus, rain streaks).
+            vec2 stratos_lowWorld(vec2 xz) {
+                return xz + u_WeatherOff.xy / u_Scale.z;
+            }
+
+            // 0.5.0 rain shafts and virga under raining cells: grey curtains below the deck's base, slanted downwind,
+            // streaked; only past 64 blocks (vanilla's rain covers the near field).
+            float stratos_shaft(vec3 p, float h) {
+                if (u_Storm.w < 0.02) {
+                    return 0.0;
+                }
+                float below = -h * u_Deck.y;
+                float depth = max(u_Deck.x - 63.0, 1.0);
+                if (below > depth) {
+                    return 0.0;
+                }
+                vec2 src = p.xz - u_Storm.yz * below * 0.35;
+                float lc = stratos_weatherEx(src).x;
+                float cell = smoothstep(0.62, 0.9, lc) * u_Storm.w;
+                if (cell < 0.01) {
+                    return 0.0;
+                }
+                vec2 wpos = stratos_lowWorld(src);
+                float streak = textureLod(u_Detail, vec3(wpos.x / 90.0, (u_Camera.x + p.y) / 900.0, wpos.y / 90.0), 0.0).r;
+                // Light rain evaporates on the way down (virga); heavy rain reaches the ground.
+                float reach = 1.0 - smoothstep(mix(0.25, 1.4, u_Storm.w), mix(0.5, 1.6, u_Storm.w), below / depth);
+                float near = smoothstep(48.0, 96.0, length(p));
+                return cell * reach * near * (0.08 + 0.14 * streak);
             }
 
             // Vertical profile at height fraction h for a cloud of this type: flat base, rounded top; sheets stay
@@ -129,6 +206,7 @@ final class CloudGlsl {
 
             // Cloud density 0..1 at camera-relative p. Cheap where the weather map says clear.
             float stratos_density(vec3 p, float lod, bool detail) {
+                stratos_shelfShare = 0.0;
                 if (u_Block.x > 0.0) {
                     // Blocky: whole cells of the world grid, in a thin flat layer.
                     float y = u_Camera.x + p.y + dot(p.xz, p.xz) * u_Camera.z;
@@ -139,16 +217,53 @@ final class CloudGlsl {
                     return step(0.5, stratos_weather(cell).x);
                 }
                 float h = stratos_heightFrac(p);
-                if (h <= 0.0 || h >= 1.0) {
+                if (h >= 1.0) {
                     return 0.0;
                 }
-                vec2 wt = stratos_weather(p.xz);
+                if (h <= 0.0) {
+                    return stratos_cheap ? 0.0 : stratos_shaft(p, h);
+                }
+                vec4 wx = stratos_weatherEx(p.xz);
+                vec2 wt = wx.xy;
                 float lc = wt.x;
-                if (lc < 0.003) {
+                float strat = wx.z;
+                // 0.5.0 storm features where a storm cell stands (towers in thunder).
+                float cell = u_Storm.x * smoothstep(0.45, 0.75, wt.y);
+                float extra = 0.0;
+                float shelf = 0.0;
+                if (u_Storm.x > 0.01 && !stratos_cheap) {
+                    if (cell > 0.01 && h > 0.7) {
+                        // Anvil: the tower's top spreads under the deck top, sheared downwind into an overhang.
+                        float a = smoothstep(0.72, 0.92, h) * cell;
+                        vec2 up = stratos_weather(p.xz - u_Storm.yz * a * 900.0);
+                        lc = max(lc, clamp(up.x + 0.35 * a, 0.0, 1.0) * smoothstep(0.4, 0.7, up.y + 0.2));
+                    }
+                    if (h < 0.22 && cell < 0.5) {
+                        // Shelf cloud: a low dark wedge ahead (downwind) of a storm cell's leading edge.
+                        vec2 back = stratos_weather(p.xz - u_Storm.yz * 650.0);
+                        float storm = u_Storm.x * smoothstep(0.45, 0.75, back.y) * smoothstep(0.5, 0.8, back.x);
+                        float wedge = smoothstep(0.02, 0.05, h) * (1.0 - smoothstep(0.08, 0.2, h));
+                        // 0.6.2: fades to nothing at the gate (it cut off at half strength: a hard-edged slab).
+                        shelf = storm * (1.0 - smoothstep(0.2, 0.5, cell)) * wedge * 0.7;
+                    }
+                    if (cell > 0.01 && h > 0.55 && h < 0.76 && lc > 0.35) {
+                        // Mammatus: pouches hanging from the anvil's underside.
+                        vec2 wpos = stratos_lowWorld(p.xz);
+                        float pouch = textureLod(u_LayerTex, wpos / 380.0 + vec2(0.19, 0.71), 0.0).b;
+                        float hang = (0.74 - h) / 0.19;
+                        extra = max(extra, smoothstep(0.0, 0.12, pouch - 0.3 - hang * 0.55) * cell * 0.8);
+                    }
+                }
+                float extras = max(extra, shelf);
+                if (lc < 0.003 && extras <= 0.0) {
                     return 0.0;
                 }
                 float prof = stratos_profile(h, wt.y);
-                if (prof < 0.003) {
+                if (cell > 0.01) {
+                    // The anvil keeps its full height to the deck top.
+                    prof = max(prof, smoothstep(0.72, 0.85, h) * cell * (1.0 - smoothstep(0.97, 1.0, h)));
+                }
+                if (prof < 0.003 && extras <= 0.0) {
                     return 0.0;
                 }
                 float yWorld = u_Camera.x + p.y;
@@ -163,7 +278,11 @@ final class CloudGlsl {
                 // density varies in patches, instead of flat discs.
                 float sheetBase = smoothstep(0.0, 0.14, h + (shape - 0.5) * 0.18);
                 float sheet = sheetBase * prof * smoothstep(0.25, 0.7, shape * 0.6 + lc * 0.4) * lc;
-                float d = mix(cum, sheet, u_Type.x);
+                float base = max(mix(cum, sheet, strat), extra);
+                // 0.6.2: the shelf takes the shape noise (it was a smooth slab) and says how much of the sample it is.
+                float sh = shelf * smoothstep(0.2, 0.65, shape);
+                float d = max(base, sh);
+                stratos_shelfShare = sh > 0.0 ? clamp((sh - base) / sh * 3.0, 0.0, 1.0) : 0.0;
                 if (detail && d > 0.0 && u_Type.w > 0.0) {
                     float n = textureLod(u_Detail, vec3(p.x * u_Scale.y + u_ShapeOff.z, yWorld * u_Scale.y,
                             p.z * u_Scale.y + u_ShapeOff.w), 0.0).r;
@@ -293,7 +412,9 @@ final class CloudGlsl {
                         break;
                     }
                     t += step;
+                    stratos_cheap = true;
                     od += stratos_density(p + u_LightDir.xyz * t, 1.0, false) * step;
+                    stratos_cheap = false;
                     step *= 2.2;
                 }
                 return od * u_Deck.w;
@@ -324,8 +445,27 @@ final class CloudGlsl {
             vec4 stratos_low(vec3 dir, float tMax, float jitter, out float dist) {
                 vec2 seg = stratos_slab(u_Deck.x, u_Deck.x + (u_Block.x > 0.0 ? u_Block.y : u_Deck.y), dir, tMax);
                 dist = -1.0;
+                // 0.5.0: the regional values for this ray, at the middle of its stretch through the deck.
+                stratos_rayRegion = u_Local.z > 0.5 && seg.x < seg.y
+                        ? stratos_region(dir.xz * (0.5 * (seg.x + seg.y))) : vec3(-1.0);
+                // 0.5.0: rain shafts below the base, in 3 steps of their own (grey, lit by the sky only).
+                vec3 shaftLight = vec3(0.0);
+                float shaftT = 1.0;
+                if (u_Storm.w > 0.02 && u_Block.x == 0.0) {
+                    vec2 low = stratos_slab(63.0, u_Deck.x, dir, tMax);
+                    if (low.x < low.y) {
+                        float sdt = (low.y - low.x) / 3.0;
+                        for (int i = 0; i < 3; i++) {
+                            vec3 q = dir * (low.x + sdt * (float(i) + jitter));
+                            float sd = stratos_shaft(q, stratos_heightFrac(q));
+                            float tr = exp(-sd * u_Deck.w * sdt);
+                            shaftLight += shaftT * (1.0 - tr) * stratos_ambient(0.0) * 0.8;
+                            shaftT *= tr;
+                        }
+                    }
+                }
                 if (seg.x >= seg.y) {
-                    return vec4(0.0, 0.0, 0.0, 1.0);
+                    return vec4(shaftLight, shaftT);
                 }
                 bool far = seg.x > STRATOS_NEAR_BAND;
                 int steps = far ? max(3, u_Info.z / 3) : u_Info.z;
@@ -367,6 +507,8 @@ final class CloudGlsl {
                     taken++;
                     float d = stratos_density(p, lod, detail);
                     if (d > 0.0) {
+                        // Read before the light march, which overwrites it.
+                        float shade = 1.0 - 0.85 * stratos_shelfShare;
                         float sigma = d * u_Deck.w;
                         float od = stratos_lightDepth(p);
                         float h = stratos_heightFrac(p);
@@ -377,8 +519,13 @@ final class CloudGlsl {
                         // the whole picture, which made rain clouds vanish into the sky).
                         float albedo = mix(1.0 - u_Haze.w, 1.0, clamp(h * 1.4, 0.0, 1.0));
                         float third = u_March.z > 0.5 ? exp(-od * 0.0625) * 0.25 * phase3 : 0.0;
-                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti + third) * powder * 12.566
-                                + stratos_ambient(h) * mix(0.55, 1.0, h)) * albedo;
+                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti + third) * powder * 12.566 * shade
+                                + stratos_ambient(h) * mix(0.55, 1.0, h) * mix(1.0, shade, 0.5)) * albedo;
+                        if (u_Flash.w > 0.0) {
+                            // 0.5.0: lightning lights the cell from within (falls off over a few hundred blocks).
+                            vec3 dv = p - u_Flash.xyz;
+                            s += vec3(0.85, 0.88, 1.0) * (u_Flash.w * 9.0 / (1.0 + dot(dv, dv) / 122500.0));
+                        }
                         float tr = exp(-sigma * dt);
                         float absorbed = trans * (1.0 - tr);
                         light += s * absorbed;
@@ -389,7 +536,11 @@ final class CloudGlsl {
                     t += dt;
                 }
                 dist = weightSum > 1e-4 ? distSum / weightSum : -1.0;
-                return vec4(light, trans);
+                // Shafts lie in front of the deck from below it, behind it from above.
+                if (u_Camera.x < u_Deck.x) {
+                    return vec4(shaftLight + shaftT * light, shaftT * trans);
+                }
+                return vec4(light + trans * shaftLight, trans * shaftT);
             }
 
             // A thin layer at height h: (rgb light, a transmittance); t is where the ray meets it.
@@ -527,6 +678,44 @@ final class CloudGlsl {
             """;
 
     /** Temporal resolve: this frame's (jittered) march blended with last frame's, reprojected by cloud distance. */
+    /**
+     * 0.4.0 "Mirror": the clouds along the directions of the sky-view map (the lib's SkyView layout: u world azimuth,
+     * v = sqrt(elevation / (pi / 2))), a few rows a frame. The march's own functions, few steps, no depth limit; one
+     * output: premultiplied light and transmittance of all decks, in their order along the view.
+     */
+    static final String MAP = MARCH.substring(0, MARCH.lastIndexOf("void main() {")) + """
+            uniform vec4 u_Probe0;     // x 1 when the camera is above the altocumulus
+
+            void main() {
+                float az = (v_Uv.x - 0.5) * 6.2831853;
+                float el = v_Uv.y * v_Uv.y * 1.5707963;
+                vec3 dir = vec3(cos(el) * cos(az), sin(el), cos(el) * sin(az));
+                float tMax = u_Camera.y;
+                float tLow;
+                vec4 low = stratos_low(dir, tMax, 0.5, tLow);
+                float tMid = -1.0;
+                float tHigh = -1.0;
+                vec4 mid = u_Layers.z > 0.0 && u_Block.x == 0.0 ? stratos_sheet(u_Layers.x, dir, tMax, false, tMid) : vec4(0.0, 0.0, 0.0, 1.0);
+                vec4 high = u_Layers.w > 0.0 ? stratos_sheet(u_Layers.y, dir, tMax, true, tHigh) : vec4(0.0, 0.0, 0.0, 1.0);
+                low = stratos_haze(low, tLow);
+                mid = stratos_haze(mid, tMid);
+                high = stratos_haze(high, tHigh);
+                vec4 b = mid;
+                vec4 c = high;
+                if (tHigh >= 0.0 && (tMid < 0.0 || tHigh < tMid)) {
+                    b = high;
+                    c = mid;
+                }
+                vec4 thin = vec4(b.rgb + b.a * c.rgb, b.a * c.a);
+                vec3 grade = u_Tint.rgb * u_Tint.w;
+                low.rgb *= grade;
+                thin.rgb *= grade;
+                // u_Probe0.x: 1 when the camera is above the altocumulus (the thin decks in front of the low deck).
+                fragColor = u_Probe0.x > 0.5 ? vec4(thin.rgb + thin.a * low.rgb, thin.a * low.a)
+                        : vec4(low.rgb + low.a * thin.rgb, low.a * thin.a);
+            }
+            """;
+
     static final String RESOLVE = """
             uniform sampler2D u_Low;
             uniform sampler2D u_LowDepth;

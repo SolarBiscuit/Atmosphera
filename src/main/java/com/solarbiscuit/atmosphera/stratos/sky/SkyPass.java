@@ -8,6 +8,7 @@ import com.solarbiscuit.atmosphera.lib.gpu.FrameUniforms;
 import com.solarbiscuit.atmosphera.lib.gpu.GlStateSnapshot;
 import com.solarbiscuit.atmosphera.lib.gpu.GlslPrograms;
 import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
+import com.solarbiscuit.atmosphera.lib.gpu.GpuTimers;
 import com.solarbiscuit.atmosphera.lib.gpu.PostPasses;
 import com.solarbiscuit.atmosphera.lib.gpu.RenderTargets;
 import com.solarbiscuit.atmosphera.lib.world.SkySource;
@@ -64,11 +65,38 @@ public final class SkyPass {
     private static float lutSun = Float.NaN;
     private static float lutRadius = Float.NaN;
 
+    // 0.6.0: what the haze pass needs to read the sky-view table as the sky draws it.
+    private static float lastExposure = EXPOSURE;
+    private static float lastSunAzimuth;
+    private static float lastHorizon;
+
+    /** The sky-view table while the sky was drawn lately, else 0 (the haze then uses the fog colour). */
+    public static int horizonLut() {
+        return drawn() ? skyView : 0;
+    }
+
+    public static float horizonExposure() {
+        return lastExposure;
+    }
+
+    public static float sunAzimuth() {
+        return lastSunAzimuth;
+    }
+
+    public static float horizonAngle() {
+        return lastHorizon;
+    }
+
     // Per-frame values shared with the SkySource provider (render thread).
     private static float rain;
     private static float thunder;
     private static float moonBrightness = 1f;
     private static long drawnFrame = -1;
+    /** 0.4.0 "Mirror": the lib's SkyView map (128x64 RGBA16F, display values), 8 rows a frame. */
+    private static int skyMap;
+    private static int skyMapFbo;
+    private static int skyMapRow;
+    private static long skyMapFrame = -1;
     private static final float[] TMP = new float[3];
 
     private SkyPass() {
@@ -85,6 +113,8 @@ public final class SkyPass {
                 .register();
         PostPasses.register(feature, PostPasses.Stage.SKY, 0, "stratos_sky", SkyPass::render);
         SkySource.register(feature, SkyPass::skyColor);
+        com.solarbiscuit.atmosphera.lib.world.SkyView.register(feature,
+                () -> skyMap != 0 && AtmosClient.frame() - skyMapFrame <= 2 ? skyMap : 0);
     }
 
     /** True while the sky was drawn this frame or the one before. */
@@ -177,6 +207,7 @@ public final class SkyPass {
                 if (!drawLut(skyView, VIEW_W, VIEW_H)) {
                     return;
                 }
+                GpuTimers.begin("stratos_sky_lut");
                 bind(13, transmittance);
                 bind(14, multiScatter);
                 GL20C.glUseProgram(skyViewProgram);
@@ -184,6 +215,7 @@ public final class SkyPass {
                 GL20C.glUniform1i(viewU[1], 14);
                 GL20C.glUniform4f(viewU[2], radius, sunY, 0f, 0f);
                 GlslPrograms.drawFullscreen();
+                GpuTimers.end("stratos_sky_lut");
                 lutSun = sunY;
                 lutRadius = radius;
             }
@@ -207,15 +239,24 @@ public final class SkyPass {
             GL20C.glUniformMatrix4fv(u[5], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
             float sx = SunSource.dirX();
             float sz = SunSource.dirZ();
-            GL20C.glUniform4f(u[6], radius, sunY, (float) Math.atan2(sz, sx), exposure(sunY));
+            lastExposure = exposure(sunY);
+            lastSunAzimuth = (float) Math.atan2(sz, sx);
+            lastHorizon = (float) -Math.asin(Math.min(1.0, Math.sqrt(Math.max(radius * (double) radius
+                    - SkyModel.RG * SkyModel.RG, 0.0)) / radius));
+            GL20C.glUniform4f(u[6], radius, sunY, lastSunAzimuth, lastExposure);
             float sunRadius = (float) Math.toRadians(0.75 * StratosConfig.sunSize.get());
             float moonRadius = (float) Math.toRadians(1.1 * StratosConfig.moonSize.get());
             GL20C.glUniform4f(u[7], sx, sunY, sz, sunRadius);
             GL20C.glUniform4f(u[8], -sx, -sunY, -sz, moonRadius);
             int phase = level.getMoonPhase();
             GL20C.glUniform4f(u[9], (float) (phase * Math.PI / 4.0), moonBrightness, pack ? 1f : 0f, phase);
+            float rotation = level.getSunAngle(partial);
             GL20C.glUniform4f(u[10], StratosConfig.stars.get().floatValue(), StratosConfig.milkyWay.get().floatValue(),
-                    level.getSunAngle(partial), StratosConfig.airglow.get().floatValue());
+                    (float) Math.cos(rotation), (float) Math.sin(rotation));
+            float deckTop = com.solarbiscuit.atmosphera.stratos.cloud.CloudPass.deckTop();
+            float above = Float.isNaN(deckTop) ? 0f : smoothstep(deckTop, deckTop + 150f, (float) ctx.camera().y);
+            GL20C.glUniform4f(u[14], StratosConfig.airglow.get().floatValue(), StratosConfig.starAmount.get().floatValue(),
+                    above, 0f);
             GL20C.glUniform4f(u[11], StratosConfig.skySaturation.get().floatValue(),
                     (float) Math.toRadians(StratosConfig.horizonBlend.get()), rain, thunder);
             float[] fog = RenderSystem.getShaderFogColor();
@@ -223,8 +264,34 @@ public final class SkyPass {
             GL20C.glUniform4f(u[12], fog[0], fog[1], fog[2], pixel);
             // y, z: cosines of the sun's and moon's early-out angles (8 and 3 radii).
             GL20C.glUniform4f(u[13], ((level.getGameTime() % 24000L) + partial) / 20f,
-                    (float) Math.cos(Math.min(sunRadius * 8f, Math.PI)), (float) Math.cos(Math.min(moonRadius * 3f, Math.PI)), 0f);
+                    (float) Math.cos(Math.min(sunRadius * 8f, Math.PI)), (float) Math.cos(Math.min(moonRadius * 3f, Math.PI)),
+                    (float) -Math.asin(Math.min(1.0, Math.sqrt(Math.max(radius * (double) radius - SkyModel.RG * SkyModel.RG, 0.0)) / radius)));
+            // 0.3.2: the draw alone, apart from the pass's outer timer (which also catches work queued before it).
+            GL20C.glUniform4f(u[15], 0f, 0f, 0f, 0f);
+            GpuTimers.begin("stratos_sky_draw");
             GlslPrograms.drawFullscreen();
+            GpuTimers.end("stratos_sky_draw");
+
+            // 0.4.0 "Mirror": the sky-view map (sky and clouds) for water reflections, 8 of 64 rows a frame.
+            boolean fresh = skyMap == 0;
+            if (com.solarbiscuit.atmosphera.lib.world.SkyView.wanted() && (!fresh || createSkyMap())) {
+                GpuTimers.begin("stratos_skyview");
+                int clouds = com.solarbiscuit.atmosphera.stratos.cloud.CloudPass.cloudMap();
+                bind(12, clouds);
+                GL20C.glUniform1i(u[16], 12);
+                GL20C.glUniform4f(u[15], 1f, clouds != 0 ? 1f : 0f, 0f, 0f);
+                GL30C.glBindFramebuffer(GL30C.GL_FRAMEBUFFER, skyMapFbo);
+                GL11C.glViewport(0, 0, MAP_W, MAP_H);
+                if (!fresh) {
+                    GL11C.glEnable(GL11C.GL_SCISSOR_TEST);
+                    GL11C.glScissor(0, skyMapRow, MAP_W, MAP_ROWS);
+                }
+                GlslPrograms.drawFullscreen();
+                GL11C.glDisable(GL11C.GL_SCISSOR_TEST);
+                skyMapRow = (skyMapRow + MAP_ROWS) % MAP_H;
+                skyMapFrame = frame;
+                GpuTimers.end("stratos_skyview");
+            }
             drawnFrame = frame;
         } finally {
             for (int unit = 10; unit <= 15; unit++) {
@@ -233,6 +300,36 @@ public final class SkyPass {
             }
             saved.restore();
         }
+    }
+
+    private static final int MAP_W = 128;
+    private static final int MAP_H = 64;
+    private static final int MAP_ROWS = 8;
+
+    private static boolean createSkyMap() {
+        skyMap = lut("Stratos sky view map", MAP_W, MAP_H, true);
+        skyMapFbo = GpuResources.framebuffer("Stratos sky view map");
+        GL30C.glBindFramebuffer(GL30C.GL_FRAMEBUFFER, skyMapFbo);
+        GL30C.glFramebufferTexture2D(GL30C.GL_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT0, GL11C.GL_TEXTURE_2D, skyMap, 0);
+        GL20C.glDrawBuffers(GL30C.GL_COLOR_ATTACHMENT0);
+        if (GL30C.glCheckFramebufferStatus(GL30C.GL_FRAMEBUFFER) != GL30C.GL_FRAMEBUFFER_COMPLETE) {
+            Stratos.LOGGER.error("Stratos sky view framebuffer incomplete; water reflections keep the plain sky colour");
+            releaseSkyMap();
+            return false;
+        }
+        return true;
+    }
+
+    private static void releaseSkyMap() {
+        if (skyMapFbo != 0) {
+            GpuResources.deleteFramebuffer(skyMapFbo);
+            skyMapFbo = 0;
+        }
+        if (skyMap != 0) {
+            GpuResources.deleteTexture(skyMap);
+            skyMap = 0;
+        }
+        skyMapFrame = -1;
     }
 
     private static void bind(int unit, int texture) {
@@ -303,7 +400,8 @@ public final class SkyPass {
         }
         viewU = locate(skyViewProgram, "u_Transmittance", "u_MultiScatter", "u_SkyCam");
         skyU = locate(skyProgram, "u_Transmittance", "u_SkyView", "u_Noise", "u_PackSun", "u_PackMoon", "u_InvViewProj",
-                "u_SkyCam", "u_Sun", "u_Moon", "u_MoonPhase", "u_Stars", "u_Look", "u_Fog", "u_Time");
+                "u_SkyCam", "u_Sun", "u_Moon", "u_MoonPhase", "u_Stars", "u_Look", "u_Fog", "u_Time", "u_Look2",
+                "u_Map", "u_CloudMap");
         transmittance = lut("Stratos sky transmittance", TRANS_W, TRANS_H, false);
         multiScatter = lut("Stratos sky multiple scattering", MS_SIZE, MS_SIZE, false);
         skyView = lut("Stratos sky view", VIEW_W, VIEW_H, true);
@@ -335,6 +433,7 @@ public final class SkyPass {
             }
         }
         transmittance = multiScatter = skyView = 0;
+        releaseSkyMap();
         if (fbo != 0) {
             GpuResources.deleteFramebuffer(fbo);
             fbo = 0;

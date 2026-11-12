@@ -1,0 +1,12 @@
+{
+  "biomes": [
+    "#minecraft:is_beach",
+    "#minecraft:is_river"
+  ],
+  "priority": 7,
+  "fog_color": "#A9C2D8",
+  "tint": 0.12,
+  "fog_distance": 1.0,
+  "haze": 1.1,
+  "mist": 1.3
+}

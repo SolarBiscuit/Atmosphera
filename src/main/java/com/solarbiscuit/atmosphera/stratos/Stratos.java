@@ -34,6 +34,16 @@ public final class Stratos {
         StratosConfig.register();
         CloudPass.register();
         SkyPass.register();
-        modBus.addListener((RegisterClientReloadListenersEvent e) -> e.registerReloadListener(new CloudStyle.Loader()));
+        com.solarbiscuit.atmosphera.stratos.air.AirFog.register();
+        // 0.6.0: /atmosphera reload shaders (and the reload key) rebuilds Stratos's programs and tables too.
+        com.solarbiscuit.atmosphera.lib.options.AtmosReload.register(MOD_ID, () -> {
+            CloudPass.release();
+            SkyPass.release();
+            com.solarbiscuit.atmosphera.stratos.air.HazePass.release();
+        });
+        modBus.addListener((RegisterClientReloadListenersEvent e) -> {
+            e.registerReloadListener(new CloudStyle.Loader());
+            e.registerReloadListener(new com.solarbiscuit.atmosphera.stratos.air.AirData.Loader());
+        });
     }
 }

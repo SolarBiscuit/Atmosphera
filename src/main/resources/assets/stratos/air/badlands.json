@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "#minecraft:is_badlands"
+  ],
+  "priority": 15,
+  "fog_color": "#D6A57E",
+  "tint": 0.35,
+  "fog_distance": 0.95,
+  "haze": 1.3,
+  "mist": 0.1
+}

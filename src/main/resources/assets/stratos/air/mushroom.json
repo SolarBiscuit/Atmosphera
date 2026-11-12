@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "minecraft:mushroom_fields"
+  ],
+  "priority": 15,
+  "fog_color": "#AE9DB4",
+  "tint": 0.35,
+  "fog_distance": 0.8,
+  "haze": 1.2,
+  "mist": 1.2
+}

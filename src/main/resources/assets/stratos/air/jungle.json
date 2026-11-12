@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "#minecraft:is_jungle"
+  ],
+  "priority": 12,
+  "fog_color": "#A6C4AA",
+  "tint": 0.3,
+  "fog_distance": 0.75,
+  "haze": 1.3,
+  "mist": 1.4
+}

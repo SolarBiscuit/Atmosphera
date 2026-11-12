@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "minecraft:cherry_grove"
+  ],
+  "priority": 15,
+  "fog_color": "#E3C6D4",
+  "tint": 0.2,
+  "fog_distance": 1.0,
+  "haze": 1.0,
+  "mist": 1.0
+}

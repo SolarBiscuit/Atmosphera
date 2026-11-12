@@ -1,0 +1,11 @@
+{
+  "biomes": [
+    "#minecraft:is_taiga"
+  ],
+  "priority": 10,
+  "fog_color": "#C3CEDC",
+  "tint": 0.25,
+  "fog_distance": 0.85,
+  "haze": 1.1,
+  "mist": 1.2
+}

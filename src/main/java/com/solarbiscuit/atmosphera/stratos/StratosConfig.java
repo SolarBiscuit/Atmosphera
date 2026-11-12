@@ -68,6 +68,15 @@ public final class StratosConfig {
     public static AtmosConfig.FeatureSwitch shadows;
     public static AtmosOption<Boolean> marchNear;
     public static AtmosOption<Boolean> marchThirdOctave;
+    public static AtmosOption<Boolean> stormShapes;
+    public static AtmosOption<Boolean> rainShafts;
+    public static AtmosOption<Boolean> lightning;
+    public static AtmosOption<Boolean> regional;
+    public static AtmosConfig.FeatureSwitch air;
+    public static AtmosOption<Double> biomeFog;
+    public static AtmosOption<Double> haze;
+    public static AtmosOption<Boolean> weatherFog;
+    public static AtmosOption<Boolean> morningMist;
     public static AtmosConfig.FeatureSwitch sky;
     public static AtmosOption<Double> skyBrightness;
     public static AtmosOption<Double> skySaturation;
@@ -76,6 +85,7 @@ public final class StratosConfig {
     public static AtmosOption<Double> sunSize;
     public static AtmosOption<Double> moonSize;
     public static AtmosOption<Double> stars;
+    public static AtmosOption<Double> starAmount;
     public static AtmosOption<Double> milkyWay;
     public static AtmosOption<Double> airglow;
 
@@ -145,6 +155,33 @@ public final class StratosConfig {
                 "Clouds shade the ground, water and distant terrain, and light pours through their gaps (with Lumis: "
                         + "on terrain, LODs, entities and in the light shafts).");
 
+        config.section("storm", "Storms and regions (0.5.0 \"Storm\"). All on by default.");
+        stormShapes = config.toggle("storm_shapes", true, ChangeTier.LIVE, "Storm clouds",
+                "In thunder, towers spread into anvils with mammatus pouches beneath, and a dark shelf cloud runs ahead "
+                        + "of each storm.");
+        rainShafts = config.toggle("rain_shafts", true, ChangeTier.LIVE, "Rain shafts",
+                "Grey curtains of rain under raining clouds, slanted by the wind; light rain fades out before the "
+                        + "ground. Seen from afar before the rain arrives.");
+        lightning = config.toggle("lightning", true, ChangeTier.LIVE, "Lightning in clouds",
+                "Flashes light storm clouds from within (the same flashes for every player on a server).");
+        regional = config.toggle("regional", true, ChangeTier.LIVE, "Regional clouds",
+                "Clouds follow the biomes around you, not only your own: fewer over deserts, flatter over snow. "
+                        + "Hills and mountains facing the wind gather cloud; their lee sides clear.");
+
+        config.section("air", "The air (0.6.0 \"Air\"): biome fog, weather fog, dawn mist and distant haze. All on by default; "
+                + "while Atmospherics is installed it keeps the fog unless the overlap option below is off.");
+        air = config.featureSwitch("enabled", true, "Stratos air",
+                "Fog coloured and thickened by the biomes around you (green-grey swamps, dusty deserts, cool taiga, "
+                        + "blue sea air), drawn in by rain, with mist at dawn, and a haze over distant terrain and LODs.");
+        biomeFog = config.percent("biome_fog", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Biome fog",
+                "How strongly biomes colour and thicken the fog. 0% leaves the game's fog.");
+        haze = config.percent("haze", 1.0, 0.0, 3.0, ChangeTier.LIVE, "Distant haze",
+                "How hazy far terrain and LODs look. 0% turns the haze off.");
+        weatherFog = config.toggle("weather_fog", true, ChangeTier.LIVE, "Weather fog",
+                "Rain and storms draw the fog in and grey it.");
+        morningMist = config.toggle("morning_mist", true, ChangeTier.LIVE, "Dawn mist",
+                "Mist low over water and wet ground around sunrise, lifting as the sun climbs.");
+
         config.section("march", "Cloud march tuning (0.2.0). Each item is measured on its own before it becomes a default.");
         marchNear = config.toggle("near_disparity", false, ChangeTier.LIVE, "Near steps in 1/distance",
                 "With the camera in or just under the clouds, space the near steps evenly in 1/distance, so the first "
@@ -152,7 +189,9 @@ public final class StratosConfig {
         marchThirdOctave = config.toggle("third_octave", false, ChangeTier.LIVE, "Third scattering octave",
                 "A softer third light-scattering term that lifts deep cloud cores out of grey.");
 
-        config.section("sky", "The sky (0.3.0 \"Firmament\"): a physically based atmosphere, sun, moon and stars.");
+        config.section("sky", "The sky (0.3.0 \"Firmament\"): a physically based atmosphere, sun, moon and stars. Every sky "
+                + "feature is on by default and has its own switch; chance events are seeded by the day, so every player "
+                + "on a server sees the same ones.");
         sky = config.featureSwitch("enabled", true, "Stratos sky",
                 "Replaces vanilla's sky with Stratos's: blue overhead, hazy at the horizon, true sunsets and twilight, "
                         + "the Earth's shadow, a starry night. Off under a shaderpack (it draws its own).");
@@ -169,7 +208,9 @@ public final class StratosConfig {
                 "100% is a disc 1.5 degrees across (the real sun is half that; vanilla's is far larger).");
         moonSize = config.percent("moon_size", 1.0, 0.25, 4.0, ChangeTier.LIVE, "Moon size",
                 "100% is a disc 2.2 degrees across.");
-        stars = config.percent("stars", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Stars", "Brightness of the stars.");
+        stars = config.percent("stars", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Star brightness", "Brightness of the stars.");
+        starAmount = config.percent("star_amount", 1.0, 0.0, 3.0, ChangeTier.LIVE, "Star amount",
+                "How many stars there are. 100% is a clear country sky, 300% a mountain-top sky; 0% hides them.");
         milkyWay = config.percent("milky_way", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Milky Way",
                 "Brightness of the faint band of the galaxy.");
         airglow = config.percent("airglow", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Airglow",
