@@ -6,6 +6,7 @@ import com.solarbiscuit.atmosphera.lib.feature.Capability;
 import com.solarbiscuit.atmosphera.lib.wind.AtmosClock;
 import com.solarbiscuit.atmosphera.stratos.Stratos;
 import com.solarbiscuit.atmosphera.stratos.StratosConfig;
+import com.solarbiscuit.atmosphera.stratos.cloud.CloudWeather;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -44,6 +45,8 @@ public final class AirFog {
     private static float haze = 1f;
     private static float mist = 1f;
     private static float wet;
+    /** The dawn mist's strength now, 0..1 (for the fogbow). */
+    private static float mistNow;
     // Targets, from the last biome sampling.
     private static float tR;
     private static float tG;
@@ -78,6 +81,11 @@ public final class AirFog {
     }
 
     /** The eased haze scale of the biomes around (1 neutral), for the haze pass. */
+    /** The dawn mist around the camera now, 0..1. */
+    public static float mistNow() {
+        return mistNow;
+    }
+
     static float hazeScale() {
         return haze;
     }
@@ -158,7 +166,8 @@ public final class AirFog {
         if (StratosConfig.weatherFog.get()) {
             // Rain and thunder grey the fog (towards its own brightness).
             float partial = (float) event.getPartialTick();
-            float grey = 0.5f * level.getRainLevel(partial) + 0.2f * level.getThunderLevel(partial);
+            float grey = 0.5f * CloudWeather.wetness(level.getRainLevel(partial), level.getThunderLevel(partial))
+                    + 0.2f * level.getThunderLevel(partial);
             float l = 0.3f * red + 0.59f * green + 0.11f * blue;
             red += (l - red) * grey;
             green += (l - green) * grey;
@@ -188,7 +197,8 @@ public final class AirFog {
         float partial = (float) event.getPartialTick();
         float scale = 1f + (distance - 1f) * StratosConfig.biomeFog.get().floatValue();
         if (StratosConfig.weatherFog.get()) {
-            scale *= 1f - 0.35f * level.getRainLevel(partial) - 0.2f * level.getThunderLevel(partial);
+            scale *= 1f - 0.35f * CloudWeather.wetness(level.getRainLevel(partial), level.getThunderLevel(partial))
+                    - 0.2f * level.getThunderLevel(partial);
         }
         if (StratosConfig.morningMist.get()) {
             // Dawn mist: from just before sunrise until the sun is about 20 degrees up, low over wet ground.
@@ -196,7 +206,10 @@ public final class AirFog {
             float dawn = time > 22500L ? (time - 22500L) / 1500f : time < 2500L ? 1f - time / 2500f : 0f;
             float low = 1f - smoothstep(64f, 110f, (float) camera.getPosition().y);
             float m = dawn * low * wet * Math.min(1.5f, mist);
+            mistNow = Math.min(1f, m);
             scale *= 1f - 0.6f * Math.min(1f, m);
+        } else {
+            mistNow = 0f;
         }
         if (Math.abs(scale - 1f) < 0.002f) {
             return;

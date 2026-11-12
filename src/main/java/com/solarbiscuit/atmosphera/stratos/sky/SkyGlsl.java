@@ -239,6 +239,9 @@ final class SkyGlsl {
             uniform sampler2D u_Noise;         // Stratos's layer texture (crater and Milky Way detail)
             uniform sampler2D u_PackSun;
             uniform sampler2D u_PackMoon;
+            uniform sampler2D u_Nebula;        // 0.9.0: the night's nebula image (NebulaImages)
+            uniform vec4 u_Neb;                // xy: uv per unit of q, z: fade-in, w: the image's long side (0 = none)
+            uniform vec4 u_NebGlow;            // rgb: the image's mean colour times its fade-in (the glow round it)
             uniform mat4 u_InvViewProj;
             uniform vec4 u_SkyCam;    // x camera radius (km), y sun cosine-zenith, z sun azimuth (radians), w exposure
             uniform vec4 u_Sun;       // xyz towards the sun (world), w angular radius (radians)
@@ -248,9 +251,23 @@ final class SkyGlsl {
             uniform vec4 u_Look;      // x saturation, y horizon blend (radians), z rain, w thunder
             uniform vec4 u_Fog;       // rgb fog colour (the game's, biome tinted), w pixel angle
             uniform vec4 u_Look2;     // x airglow, y star amount, z 0..1 camera above the cloud deck
-            uniform vec4 u_Map;       // 0.4.0: x 1 = draw the sky-view map (lib SkyView layout), y 1 = a cloud map is bound
+            uniform vec4 u_Map;       // 0.4.0: x 1 = draw the sky-view map (lib SkyView layout), y 1 = a cloud map is bound, z 1 = sky events
             uniform sampler2D u_CloudMap;
             uniform vec4 u_Time;      // x seconds, y/z cosines of the sun's/moon's early-out angles, w horizon (radians)
+            // 0.7.0-0.9.0: the sky's occasional sights (SkyEvents). u_Map.z is 1 while any of them shows.
+            uniform vec4 u_Fx[8];
+            // [0] x halo, y sun dogs, z circumzenithal arc, w green flash (strengths 0..1)
+            // [1] x aurora, y noctilucent clouds, z zodiacal light, w meteor count
+            // [2] nebula: x strength, y image index, z 1 / sin(radius), w cosine of its outer angle
+            // [3] nebula: xyz centre among the stars, w its turn on the sky (radians)
+            // [4] lunar eclipse, in moon radii: xy the shadow's centre, z its radius, w strength
+            // [5] the halo's light: xyz towards the sun (or the moon by night), w its brightness
+            // [6] x seconds, y the night's seed, z noctilucent upper limit (sine of the elevation), w pillar count
+            // [7] xy the sun's horizontal direction, z the circumzenithal arc's elevation (radians)
+            uniform vec4 u_Dog[2];       // sun dogs: xyz direction, w strength
+            uniform vec4 u_Pillar[8];    // light pillars: xy horizontal direction, z 1 / width^2, w height falloff
+            uniform vec4 u_PillarCol[8]; // rgb colour times intensity
+            uniform vec4 u_Meteor[8];    // two rows each: head xyz + brightness, tail xyz + width
             in vec2 v_Uv;
             out vec4 fragColor;
 
@@ -290,21 +307,15 @@ final class SkyGlsl {
                 return texture(u_SkyView, vec2(u, v)).rgb;
             }
 
-            vec3 sky_stars(vec3 dir, float night) {
+            vec3 sky_stars(vec3 dir, vec3 c, float night, float crowd) {
                 if (night < 0.01 || u_Stars.x <= 0.0 || u_Look2.y <= 0.0) {
                     return vec3(0.0);
                 }
-                // Celestial frame: the sky turns with the sun about the world's z axis, as vanilla's sun and stars do
-                // (the sun's direction is fixed in this frame).
-                // u_Stars.z, w: cosine and sine of the celestial rotation (from Java, not per pixel).
-                float ca = u_Stars.z;
-                float sa = u_Stars.w;
-                vec3 c = vec3(dir.x * ca + dir.y * sa, -dir.x * sa + dir.y * ca, dir.z);
                 vec3 cell = floor(c * 160.0);
                 float h = sky_hash(cell);
                 vec3 star = vec3(0.0);
                 // 0.6.0: the star amount sets the share of cells holding a star (7% at 100%, at most 25%).
-                if (h > 1.0 - min(0.07 * u_Look2.y, 0.25)) {
+                if (h > 1.0 - min(0.07 * u_Look2.y * (1.0 + crowd), 0.25)) {
                     vec3 centre = (cell + 0.5 + (vec3(sky_hash(cell + 1.7), sky_hash(cell + 3.1), sky_hash(cell + 5.3)) - 0.5) * 0.6) / 160.0;
                     // Squared angle from the chord (no acos): |a - b|^2 = 2 (1 - cos) ~ angle^2 for small angles.
                     vec3 toStar = normalize(centre) - c;
@@ -331,6 +342,23 @@ final class SkyGlsl {
                 return (star * u_Stars.x * 0.6 + milky) * visible;
             }
 
+            // 0.9.0 "Omens": the Earth's shadow on the moon (d: disc coordinates in moon radii). Outside the shadow's edge the
+            // penumbra dims the disc; inside, the moon is lit only by the Earth's sunsets: copper red, darker at the centre.
+            // cover: how much of this pixel is moon (0.9.0: the umbra colour had a floor, so the transparent margin of a
+            // resource pack's moon quad turned red, a red square round the moon).
+            vec3 sky_eclipse(vec3 moonCol, vec2 d, float cover) {
+                if (u_Fx[4].w <= 0.0) {
+                    return moonCol;
+                }
+                float ru = u_Fx[4].z;
+                float dist = length(d - u_Fx[4].xy);
+                float pen = mix(0.45, 1.0, smoothstep(ru, ru * 1.75, dist));
+                float lit = smoothstep(ru * 0.94, ru * 1.05, dist);
+                float lum = dot(moonCol, vec3(0.3, 0.6, 0.1));
+                vec3 umbra = vec3(0.85, 0.2, 0.07) * max(lum, 0.45 * cover) * (0.65 + 0.6 * smoothstep(0.0, ru, dist));
+                return mix(moonCol, mix(umbra, moonCol * pen, lit), u_Fx[4].w);
+            }
+
             vec3 sky_moon(vec3 dir, float night) {
                 float cosAng = dot(dir, u_Moon.xyz);
                 if (cosAng < u_Time.z) {
@@ -353,12 +381,17 @@ final class SkyGlsl {
                     float idx = u_MoonPhase.w;
                     vec2 cellUv = vec2(mod(idx, 4.0), floor(idx / 4.0)) * vec2(0.25, 0.5);
                     vec4 tex = textureLod(u_PackMoon, cellUv + (q * vec2(0.5, -0.5) + 0.5) * vec2(0.25, 0.5), 0.0);
-                    return tex.rgb * tex.a * 1.2;
+                    vec3 packCol = tex.rgb * tex.a * 1.2;
+                    float cover = tex.a * smoothstep(0.004, 0.04, dot(packCol, vec3(0.3, 0.6, 0.1)));
+                    return sky_eclipse(packCol, d, cover);
                 }
                 float rr = dot(d, d);
                 float glow = exp(-ang * ang / (rad * rad * 1.2)) * 0.06;
+                // In totality the glow round the moon turns red with it.
+                float total = u_Fx[4].w * (1.0 - smoothstep(u_Fx[4].z - 1.2, u_Fx[4].z - 0.7, length(u_Fx[4].xy)));
+                vec3 glowCol = mix(vec3(0.75, 0.8, 0.9), vec3(0.8, 0.25, 0.12), total);
                 if (rr > 1.0) {
-                    return vec3(0.75, 0.8, 0.9) * glow * u_MoonPhase.y;
+                    return glowCol * glow * u_MoonPhase.y;
                 }
                 vec3 normal = vec3(d, sqrt(1.0 - rr));
                 float phase = u_MoonPhase.x;
@@ -373,7 +406,7 @@ final class SkyGlsl {
                 // The lit part is as bright at a crescent as at full moon; earthshine on the dark side; a soft
                 // terminator. The glow around it follows the moon's brightness.
                 vec3 col = albedo * (smoothstep(0.0, 0.08, lit) * (0.35 + 0.65 * lit) + 0.025);
-                return col * 1.1 + vec3(0.75, 0.8, 0.9) * glow * u_MoonPhase.y;
+                return sky_eclipse(col * 1.1, d, 1.0) + glowCol * glow * u_MoonPhase.y;
             }
 
             // The sun, in display values: disc and corona tinted by the sun's transmittance (normalised), so a
@@ -414,6 +447,171 @@ final class SkyGlsl {
                 return mix(vec3(l), c, s);
             }
 
+            // ---- 0.7.0 "Optics": ice crystals in cirrus bend the light of the sun (or a bright moon). ----
+            vec3 sky_optics(vec3 dir) {
+                vec3 add = vec3(0.0);
+                vec3 src = u_Fx[5].xyz;
+                float cosA = dot(dir, src);
+                if (u_Fx[0].x > 0.0 && cosA > 0.82 && cosA < 0.945) {
+                    // The 22 degree halo: a sharp inner edge, red inside (21.7 degrees) to blue (22.4), fading slowly outwards.
+                    float a = acos(cosA);
+                    vec3 inner = smoothstep(vec3(0.3735, 0.3787, 0.3857), vec3(0.3822, 0.3875, 0.3962), vec3(a));
+                    float outer = exp(-max(a - 0.384, 0.0) / 0.05);
+                    add += inner * outer * vec3(1.0, 0.97, 0.94) * (0.35 * u_Fx[0].x * u_Fx[5].w);
+                }
+                if (u_Fx[0].y > 0.0) {
+                    // Sun dogs: a bright spot at the sun's height on each side, red towards the sun, with a white tail away from it.
+                    for (int i = 0; i < 2; i++) {
+                        vec3 d = u_Dog[i].xyz;
+                        if (dot(dir, d) > 0.985) {
+                            vec3 away = normalize(d - src * dot(d, src));
+                            vec3 rel = dir - d;
+                            float along = dot(rel, away);
+                            float across2 = max(dot(rel, rel) - along * along, 0.0);
+                            float tail = along > 0.0 ? 0.09 : 0.022;
+                            float g = exp(-along * along / (tail * tail) - across2 / 0.0004);
+                            vec3 tint = mix(vec3(1.0, 0.45, 0.2), vec3(0.95, 0.97, 1.0), smoothstep(-0.02, 0.04, along));
+                            add += tint * g * (0.75 * u_Fx[0].y * u_Dog[i].w);
+                        }
+                    }
+                }
+                if (u_Fx[0].z > 0.0 && dir.y > 0.6) {
+                    // The circumzenithal arc: a quarter circle of pure colours round the zenith, on the sun's side, red towards
+                    // the sun. u_Fx[7].z is its elevation for green; red lies lower, violet higher.
+                    vec2 h = dir.xz / max(length(dir.xz), 1e-4);
+                    float side = dot(h, u_Fx[7].xy);
+                    if (side > 0.3) {
+                        vec3 off = vec3(sky_asin(dir.y)) - (u_Fx[7].z + vec3(-0.012, 0.0, 0.016));
+                        add += exp(-off * off / 0.000121) * (0.35 * u_Fx[0].z * smoothstep(0.3, 0.75, side));
+                    }
+                }
+                return add;
+            }
+
+            // ---- 0.8.0 "Night" and the light pillars: each term is skipped by its uniform while it is not showing. ----
+            vec3 sky_nightfx(vec3 dir) {
+                vec3 add = vec3(0.0);
+                vec2 hz = dir.xz / max(length(dir.xz), 1e-4);
+                if (u_Fx[1].z > 0.0) {
+                    // Zodiacal light: a faint cone along the sun's path, leaning up from where the sun set or will rise.
+                    float toSun = dot(dir, u_Sun.xyz);
+                    add += vec3(1.0, 0.93, 0.8) * (0.1 * u_Fx[1].z) * exp(-(1.0 - toSun) * 3.2) * exp(-dir.z * dir.z / 0.03)
+                            * smoothstep(0.0, 0.12, dir.y);
+                }
+                if (u_Fx[1].x > 0.0 && dir.y > 0.06) {
+                    // Aurora: curtains in the northern sky. Thin bright ridges of a slow noise field on a plane far overhead,
+                    // sampled six times up the view ray (a hanging sheet seen from below): green low down, red-violet at the top.
+                    float mask = smoothstep(-0.25, 0.6, -hz.y) * smoothstep(0.06, 0.2, dir.y);
+                    if (mask > 0.01) {
+                        float t = u_Fx[6].x;
+                        vec2 p = dir.xz / (dir.y + 0.12);
+                        vec2 warp = (textureLod(u_Noise, p * 0.04 + vec2(u_Fx[6].y, t * 0.0015), 0.0).ga - 0.5) * 0.25;
+                        // 0.9.0: the rays come from the warp's own fetch, and 4 layers (6 cost 0.05 ms at 1440p).
+                        float rays = 0.65 + 1.4 * abs(warp.x);
+                        vec3 sum = vec3(0.0);
+                        for (int k = 0; k < 4; k++) {
+                            float fk = float(k) * 0.3333;
+                            vec2 q = p * (1.0 + 0.22 * fk) * 0.09 + warp + vec2(t * 0.003, u_Fx[6].y * 3.0);
+                            float ridge = 1.0 - abs(2.0 * textureLod(u_Noise, q, 0.0).a - 1.0);
+                            ridge *= ridge;
+                            ridge *= ridge;
+                            ridge *= ridge;
+                            sum += mix(vec3(0.15, 1.0, 0.45), vec3(0.75, 0.2, 0.65), fk * fk) * ridge * (1.0 - 0.6 * fk);
+                        }
+                        add += sum * (0.15 * u_Fx[1].x) * mask * rays;
+                    }
+                }
+                if (u_Fx[1].y > 0.0 && dir.y > 0.02) {
+                    // Noctilucent clouds: ice at the edge of space, still in sunlight long after sunset. Rippled blue-white
+                    // bands low over the sun's side of the horizon; their upper limit sinks as the sun does.
+                    float band = smoothstep(0.03, 0.09, dir.y) * (1.0 - smoothstep(u_Fx[6].z * 0.6, u_Fx[6].z, dir.y));
+                    float m = smoothstep(0.1, 0.8, dot(hz, u_Fx[7].xy)) * band;
+                    if (m > 0.01) {
+                        vec2 p = dir.xz / (dir.y + 0.05) * 0.035 + vec2(u_Fx[6].y * 5.0, u_Fx[6].x * 0.0004);
+                        float fibres = textureLod(u_Noise, p, 0.0).r;
+                        float field = textureLod(u_Noise, p * 0.31 + 0.4, 0.0).a;
+                        float ripple = 0.5 + 0.5 * sin(dot(p, vec2(210.0, 130.0)) + 6.0 * field);
+                        float n = smoothstep(0.35, 0.8, fibres * 0.75 + field * 0.5) * (0.55 + 0.45 * ripple);
+                        add += vec3(0.55, 0.8, 1.0) * n * m * (0.32 * u_Fx[1].y);
+                    }
+                }
+                // Light pillars: columns of light standing over distant lights (and over a sun at the horizon), from flat ice
+                // crystals drifting near the ground. A bright core low down and a faint glow round it.
+                int pillars = int(u_Fx[6].w);
+                for (int i = 0; i < pillars; i++) {
+                    vec4 pl = u_Pillar[i];
+                    if (dot(hz, pl.xy) > 0.98) {
+                        float sn = hz.x * pl.y - hz.y * pl.x;
+                        float g = exp(-sn * sn * pl.z) + 0.25 * exp(-sn * sn * pl.z * 0.08);
+                        add += u_PillarCol[i].rgb * g * exp(-dir.y * pl.w) * smoothstep(0.0, 0.03, dir.y);
+                    }
+                }
+                // Meteors: a short streak from the tail to the head, brightest at the head.
+                int meteors = int(u_Fx[1].w);
+                for (int i = 0; i < meteors; i++) {
+                    vec3 tail = u_Meteor[2 * i + 1].xyz;
+                    vec3 seg = u_Meteor[2 * i].xyz - tail;
+                    float along = clamp(dot(dir - tail, seg) / max(dot(seg, seg), 1e-8), 0.0, 1.0);
+                    vec3 off = dir - (tail + seg * along);
+                    float w = max(u_Meteor[2 * i + 1].w, u_Fog.w * 1.2);
+                    add += vec3(0.9, 0.95, 1.0) * (exp(-dot(off, off) / (w * w)) * along * along * u_Meteor[2 * i].w);
+                }
+                return add;
+            }
+
+            // 0.9.0: a nebula fixed among the stars (c: the celestial direction): a real telescope image on a patch of the
+            // celestial sphere, its long side the nebula's radius, turned by the night's angle, its edges and corners faded
+            // so it sits in the sky without a frame. rgb its light (display values); a unused (the image has its own dust).
+            // The mip level comes from the pixel's size on the sky (no derivatives: this runs inside branches).
+            // pixel: the screen pixel's angle on the sky (the water reflection map passes its own, much coarser).
+            vec4 sky_nebula(vec3 c, out float crowd, float pixel) {
+                crowd = 0.0;
+                vec3 n = u_Fx[3].xyz;
+                if (u_Neb.w <= 0.0 || dot(c, n) < u_Fx[2].w) {
+                    return vec4(0.0);
+                }
+                vec3 e1 = normalize(cross(abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0), n));
+                vec3 e2 = cross(n, e1);
+                vec2 q = vec2(dot(c, e1), dot(c, e2)) * u_Fx[2].z;
+                float turn = u_Fx[3].w;
+                q = mat2(cos(turn), sin(turn), -sin(turn), cos(turn)) * q;
+                vec2 uv = 0.5 + q * u_Neb.xy;
+                vec2 edge = min(uv, 1.0 - uv);
+                if (min(edge.x, edge.y) <= 0.0) {
+                    return vec4(0.0);
+                }
+                // Texels per screen pixel: the pixel's angle (u_Fog.w) in q units, times texels per unit of q (half the
+                // long side on either axis).
+                float texels = pixel * u_Fx[2].z * 0.5 * u_Neb.w;
+                vec3 img = textureLod(u_Nebula, uv, log2(max(texels, 1.0))).rgb;
+                // The edge follows the image's own structure: an elliptical falloff from 40% of the way out, which bright
+                // gas outlasts and faint background does not, so the nebula frays into the sky instead of showing a frame;
+                // a short fade at the border makes sure the frame itself never shows.
+                float lum = dot(img, vec3(0.3, 0.6, 0.1));
+                // The outline is lobed by three waves round the centre (phases seeded by the night), so it is not an oval;
+                // the image's own brightness frays it further (the layer noise streaked it).
+                vec2 e = (uv - 0.5) * 2.0;
+                float around = atan(e.y, e.x);
+                float seed = u_Fx[3].w;
+                float warp = 0.13 * sin(3.0 * around + seed * 2.3) + 0.08 * sin(5.0 * around + seed * 4.1)
+                        + 0.05 * sin(8.0 * around + seed * 6.7);
+                float falloff = 1.0 - smoothstep(0.45, 1.0, length(e) + warp);
+                float fade = smoothstep(0.0, 1.0, falloff * (0.6 + 1.8 * lum)) * smoothstep(0.0, 0.05, min(edge.x, edge.y));
+                return vec4(img * (fade * u_Fx[2].x * u_Neb.z * 0.8), 0.0);
+            }
+
+            // 0.9.0: the nebula's glow, a broad haze of its mean colour reaching past the image (its light scattered in
+            // the dust round it), most visible on a moonless night.
+            vec3 sky_nebulaGlow(vec3 c) {
+                float d = acos(clamp(dot(c, u_Fx[3].xyz), -1.0, 1.0));
+                float radius = asin(min(1.0 / u_Fx[2].z, 1.0));
+                float x = d / (1.5 * radius);
+                // Its mean colour, more saturated (an average of a colourful image is greyish).
+                float l = dot(u_NebGlow.rgb, vec3(0.3, 0.6, 0.1));
+                vec3 tint = max(mix(vec3(l), u_NebGlow.rgb, 1.8), 0.0);
+                return tint * (0.16 * exp(-x * x) * u_Fx[2].x);
+            }
+
             void main() {
                 bool mapMode = u_Map.x > 0.5;
                 vec3 dir;
@@ -451,6 +649,11 @@ final class SkyGlsl {
                 if (!mapMode) {
                     col = max(col, sky_sun(dir, sunT) * (1.0 - 0.8 * rain));
                 }
+                // 0.7.0: the occasional sights, all behind one uniform branch (nothing runs on an ordinary sky).
+                bool fx = !mapMode && u_Map.z > 0.5;
+                if (fx) {
+                    col += sky_optics(dir) * (1.0 - 0.7 * rain);
+                }
                 // Night: the model's sky goes black; a dim moonlit blue, airglow and the stars take over.
                 float night = 1.0 - smoothstep(-0.18, 0.02, u_Sun.y);
                 if (night > 0.001) {
@@ -459,9 +662,26 @@ final class SkyGlsl {
                     float above = max(dir.y, 0.0);
                     vec3 airglow = mix(vec3(0.010, 0.016, 0.006), vec3(0.012, 0.008, 0.003), above) * exp(-above * 6.0) * u_Look2.x;
                     col += (nightSky * (0.6 + 0.4 * (1.0 - above)) + airglow) * night;
-                    if (!mapMode) {
-                        col += sky_stars(dir, night);
+                    // Celestial frame: the sky turns with the sun about the world's z axis, as vanilla's sun and stars do
+                    // (u_Stars.z, w: cosine and sine of the rotation, from Java).
+                    vec3 cel = vec3(dir.x * u_Stars.z + dir.y * u_Stars.w, -dir.x * u_Stars.w + dir.y * u_Stars.z, dir.z);
+                    float crowd = 0.0;
+                    vec3 nebLight = vec3(0.0);
+                    if (u_Fx[2].x > 0.0) {
+                        // 0.9.0: also in the water reflection map (blurred by its coarse pixel), so water reflects it.
+                        nebLight = (sky_nebula(cel, crowd, mapMode ? 0.05 : u_Fog.w).rgb + sky_nebulaGlow(cel))
+                                * (night * smoothstep(-0.02, 0.15, dir.y) * (1.0 - 0.85 * u_Look.z));
                     }
+                    if (!mapMode) {
+                        // The image has its own stars: the sky's stars thin out where the nebula is bright.
+                        float nebLum = dot(nebLight, vec3(0.3, 0.6, 0.1));
+                        col += sky_stars(dir, cel, night, crowd) * (1.0 - 0.8 * smoothstep(0.02, 0.25, nebLum));
+                    }
+                    // Screen blend: the nebula lightens the sky without going past white.
+                    col += nebLight * (1.0 - clamp(col, 0.0, 1.0));
+                }
+                if (fx) {
+                    col += sky_nightfx(dir) * (1.0 - 0.85 * rain);
                 }
                 // By day the moon is pale (the sky's light lies over it).
                 if (!mapMode) {
@@ -481,6 +701,13 @@ final class SkyGlsl {
                 float blend = 1.0 - smoothstep(0.0, max(u_Look.y, 1e-3), elev);
                 col = mix(col, fogC, blend);
                 col *= mix(1.0, 0.7, smoothstep(0.0, -0.3, elev));
+                if (fx && u_Fx[0].w > 0.0 && dot(dir, u_Sun.xyz) > u_Time.y) {
+                    // The green flash: the last sliver of the sun, its top edge, as it meets the horizon.
+                    vec3 rel = (dir - u_Sun.xyz) / u_Sun.w;
+                    float cap = smoothstep(0.55, 0.95, rel.y) * (1.0 - smoothstep(1.0, 1.35, rel.y))
+                            * (1.0 - smoothstep(0.5, 0.95, length(rel.xz)));
+                    col += vec3(0.25, 1.0, 0.35) * cap * (2.0 * u_Fx[0].w) * smoothstep(0.0, 0.004, dir.y);
+                }
                 fragColor = vec4(col, 1.0);
             }
             """;

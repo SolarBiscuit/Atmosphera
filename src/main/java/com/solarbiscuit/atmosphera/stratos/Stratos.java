@@ -35,15 +35,22 @@ public final class Stratos {
         CloudPass.register();
         SkyPass.register();
         com.solarbiscuit.atmosphera.stratos.air.AirFog.register();
+        // 0.9.0: the blood moon on skybox moons; 0.7.0: /stratos skyeffect (a client command).
+        com.solarbiscuit.atmosphera.stratos.sky.MoonOverlay.register();
+        net.minecraftforge.common.MinecraftForge.EVENT_BUS.addListener(
+                (net.minecraftforge.client.event.RegisterClientCommandsEvent e) -> StratosCommand.register(e.getDispatcher()));
         // 0.6.0: /atmosphera reload shaders (and the reload key) rebuilds Stratos's programs and tables too.
         com.solarbiscuit.atmosphera.lib.options.AtmosReload.register(MOD_ID, () -> {
             CloudPass.release();
             SkyPass.release();
             com.solarbiscuit.atmosphera.stratos.air.HazePass.release();
+            com.solarbiscuit.atmosphera.stratos.sky.BowPass.release();
+            com.solarbiscuit.atmosphera.stratos.sky.MoonOverlay.release();
         });
         modBus.addListener((RegisterClientReloadListenersEvent e) -> {
             e.registerReloadListener(new CloudStyle.Loader());
             e.registerReloadListener(new com.solarbiscuit.atmosphera.stratos.air.AirData.Loader());
+            e.registerReloadListener(new com.solarbiscuit.atmosphera.stratos.sky.NebulaImages.Loader());
         });
     }
 }

@@ -8,7 +8,7 @@ Clouds, sky and air for the [Atmosphera](https://github.com/SolarBiscuit/Atmosph
 weather-driven, volumetric clouds that look like a shaderpack's, at about the cost of vanilla's, **without a
 shaderpack**. Later releases add the rest of the sky (see the roadmap).
 
-**Current version: 0.6.3** (needs AtmospheraLib 0.8.2 or newer).
+**Current version: 0.9.0** (needs AtmospheraLib 0.9.1 or newer).
 
 > **Client-only.** Never required on a server, never blocks joining one. Off while a shaderpack is active (packs draw
 > their own clouds) and under Fabulous graphics.
@@ -47,6 +47,15 @@ switch and is on by default.
 - **Option sections** in `stratos-client.toml`: "storm" (storm clouds, rain shafts, lightning, regional clouds) and
   "air" (biome fog, haze, weather fog, dawn mist).
 
+## Nebulae (0.9.0)
+- **Real images.** Nebulae are 8 telescope images from ESA/Hubble and ESA/Webb (CC BY 4.0), one per nebula night. Each
+  is 18 to 72 degrees across (most about 34).
+- **They light the night.** A glow in the sky round the nebula, a reflection in water and, with Lumis, a tint and lift
+  of the night's sky light, strongest at new moon.
+- **Resource packs** can add images in `assets/<namespace>/textures/nebula/` (JPEG or PNG).
+- **Command:** `/stratos skyeffect nebula on <n>` shows image n.
+- **Credits:** see `THIRD_PARTY_NOTICES.md` (in the jar, and in `src/main/resources/`).
+
 ## Cost
 One post pass at a fraction of the screen's resolution, smoothed over frames.
 
@@ -59,7 +68,7 @@ One post pass at a fraction of the screen's resolution, smoothed over frames.
 These are targets; they are **not yet measured**. Only AMD hardware has been tested.
 
 ## Install
-1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.8.2 or newer.
+1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.9.1 or newer.
 2. Put the Stratos jar in `mods/`.
 3. Options are on the "Stratos (clouds)" page in Video Settings (with Xenon or Embeddium), and in
    `config/Atmosphera/stratos-client.toml`.

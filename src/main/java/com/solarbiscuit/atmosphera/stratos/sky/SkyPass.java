@@ -15,6 +15,7 @@ import com.solarbiscuit.atmosphera.lib.world.SkySource;
 import com.solarbiscuit.atmosphera.lib.world.SunSource;
 import com.solarbiscuit.atmosphera.stratos.Stratos;
 import com.solarbiscuit.atmosphera.stratos.StratosConfig;
+import com.solarbiscuit.atmosphera.stratos.cloud.CloudWeather;
 import com.solarbiscuit.atmosphera.stratos.cloud.CloudNoise;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
@@ -98,6 +99,7 @@ public final class SkyPass {
     private static int skyMapRow;
     private static long skyMapFrame = -1;
     private static final float[] TMP = new float[3];
+    private static boolean eventsUploaded;
 
     private SkyPass() {
     }
@@ -112,9 +114,57 @@ public final class SkyPass {
                 .switchedBy(StratosConfig.sky)
                 .register();
         PostPasses.register(feature, PostPasses.Stage.SKY, 0, "stratos_sky", SkyPass::render);
-        SkySource.register(feature, SkyPass::skyColor);
+        // 0.7.0: rainbows are drawn over the clouds, in a pass of their own at the cloud stage.
+        BowPass.register(feature);
+        SkySource.register(feature, new SkySource.Provider() {
+            @Override
+            public boolean skyColor(float[] rgb) {
+                return SkyPass.skyColor(rgb);
+            }
+
+            @Override
+            public boolean moonTint(float[] rgb) {
+                // 0.9.0: a lunar eclipse dims and reddens the moon's light.
+                return SkyEvents.moonTint(rgb);
+            }
+
+            @Override
+            public boolean nightLight(float[] rgb) {
+                // 0.9.0: a nebula's light on the night (Lumis tints and lifts the sky light by it).
+                return SkyPass.nebulaLight(rgb);
+            }
+        });
         com.solarbiscuit.atmosphera.lib.world.SkyView.register(feature,
                 () -> skyMap != 0 && AtmosClient.frame() - skyMapFrame <= 2 ? skyMap : 0);
+    }
+
+    private static final float[] NEB_MEAN = new float[3];
+
+    /**
+     * The nebula's light (0.9.0): its mean colour in linear values scaled to luminance 1, times how strongly it shows
+     * (its brightness option, how high it stands, the night, the cloud, and its size: about 1 for a nebula of 17
+     * degrees, up to 1.6 for the largest). Lumis weighs it against the moon.
+     */
+    static boolean nebulaLight(float[] rgb) {
+        if (!drawn() || SkyEvents.FX[8] <= 0f || !NebulaImages.meanColour(NEB_MEAN)) {
+            return false;
+        }
+        float night = 1f - smoothstep(-0.18f, 0.02f, SunSource.dirY());
+        float up = smoothstep(-0.1f, 0.3f, SkyEvents.nebulaHeight);
+        // A larger nebula sends more light (its radius against 17 degrees).
+        float size = Math.max(0.5f, Math.min(1.6f, SkyEvents.nebulaRadius / 0.3f));
+        float k = SkyEvents.FX[8] * NebulaImages.fade() * night * up * (1f - 0.85f * rain) * size;
+        if (k <= 0.001f) {
+            return false;
+        }
+        float r = (float) Math.pow(NEB_MEAN[0], 2.2);
+        float g = (float) Math.pow(NEB_MEAN[1], 2.2);
+        float b = (float) Math.pow(NEB_MEAN[2], 2.2);
+        float lum = Math.max(1e-4f, 0.2126f * r + 0.7152f * g + 0.0722f * b);
+        rgb[0] = r / lum * k;
+        rgb[1] = g / lum * k;
+        rgb[2] = b / lum * k;
+        return true;
     }
 
     /** True while the sky was drawn this frame or the one before. */
@@ -188,9 +238,13 @@ public final class SkyPass {
             return;
         }
         float partial = ctx.partialTick();
-        rain = level.getRainLevel(partial);
         thunder = level.getThunderLevel(partial);
-        moonBrightness = level.getMoonBrightness();
+        // 0.6.4: the weather's weight, not the raw rain level (steady rain no longer dims the sky like a downpour).
+        rain = CloudWeather.wetness(level.getRainLevel(partial), thunder);
+        // 0.7.0: the sky's occasional sights. During a lunar eclipse the moon is drawn full and its light sinks.
+        SkyEvents.ensure(level, partial);
+        boolean eclipse = SkyEvents.eclipseNow();
+        moonBrightness = (eclipse ? 1f : level.getMoonBrightness()) * SkyEvents.moonLightScale();
         long frame = AtmosClient.frame();
         FrameUniforms.update(frame);
         GlStateSnapshot saved = GlStateSnapshot.save();
@@ -229,6 +283,11 @@ public final class SkyPass {
             bind(15, CloudNoise.layers());
             bind(11, pack ? mc.getTextureManager().getTexture(PACK_SUN).getId() : 0);
             bind(10, pack ? mc.getTextureManager().getTexture(PACK_MOON).getId() : 0);
+            // 0.9.0: the night's nebula image (decoded and uploaded over a few frames; 0 until ready).
+            boolean nebulaWanted = SkyEvents.FX[8] > 0f;
+            NebulaImages.update(nebulaWanted ? Math.round(SkyEvents.FX[9]) : -1);
+            int nebulaTexture = nebulaWanted ? NebulaImages.texture() : 0;
+            bind(9, nebulaTexture);
             GL20C.glUseProgram(skyProgram);
             int[] u = skyU;
             GL20C.glUniform1i(u[0], 13);
@@ -236,6 +295,22 @@ public final class SkyPass {
             GL20C.glUniform1i(u[2], 15);
             GL20C.glUniform1i(u[3], 11);
             GL20C.glUniform1i(u[4], 10);
+            GL20C.glUniform1i(u[22], 9);
+            if (nebulaTexture != 0) {
+                // uv = 0.5 + q * scale: the long side spans the nebula's radius (q = +-1); v runs down the image.
+                float w = NebulaImages.width();
+                float h = NebulaImages.height();
+                float sx = w >= h ? 0.5f : 0.5f * h / w;
+                float sy = w >= h ? 0.5f * w / h : 0.5f;
+                GL20C.glUniform4f(u[23], sx, -sy, NebulaImages.fade(), Math.max(w, h));
+                // The glow round it: the image's mean colour, dimmer under a bright moon (it outshines the glow).
+                NebulaImages.meanColour(NEB_MEAN);
+                float glow = NebulaImages.fade() * (1f - 0.5f * moonBrightness);
+                GL20C.glUniform4f(u[24], NEB_MEAN[0] * glow, NEB_MEAN[1] * glow, NEB_MEAN[2] * glow, 0f);
+            } else {
+                GL20C.glUniform4f(u[23], 0f, 0f, 0f, 0f);
+                GL20C.glUniform4f(u[24], 0f, 0f, 0f, 0f);
+            }
             GL20C.glUniformMatrix4fv(u[5], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
             float sx = SunSource.dirX();
             float sz = SunSource.dirZ();
@@ -248,7 +323,7 @@ public final class SkyPass {
             float moonRadius = (float) Math.toRadians(1.1 * StratosConfig.moonSize.get());
             GL20C.glUniform4f(u[7], sx, sunY, sz, sunRadius);
             GL20C.glUniform4f(u[8], -sx, -sunY, -sz, moonRadius);
-            int phase = level.getMoonPhase();
+            int phase = eclipse ? 0 : level.getMoonPhase();
             GL20C.glUniform4f(u[9], (float) (phase * Math.PI / 4.0), moonBrightness, pack ? 1f : 0f, phase);
             float rotation = level.getSunAngle(partial);
             GL20C.glUniform4f(u[10], StratosConfig.stars.get().floatValue(), StratosConfig.milkyWay.get().floatValue(),
@@ -267,7 +342,21 @@ public final class SkyPass {
                     (float) Math.cos(Math.min(sunRadius * 8f, Math.PI)), (float) Math.cos(Math.min(moonRadius * 3f, Math.PI)),
                     (float) -Math.asin(Math.min(1.0, Math.sqrt(Math.max(radius * (double) radius - SkyModel.RG * SkyModel.RG, 0.0)) / radius)));
             // 0.3.2: the draw alone, apart from the pass's outer timer (which also catches work queued before it).
-            GL20C.glUniform4f(u[15], 0f, 0f, 0f, 0f);
+            boolean events = SkyEvents.any();
+            GL20C.glUniform4f(u[15], 0f, 0f, events ? 1f : 0f, 0f);
+            // The eclipse is part of the moon (u_Fx[4]), so the block goes up whenever anything in it is set.
+            if (events || eclipse) {
+                GL20C.glUniform4fv(u[17], stack.floats(SkyEvents.FX));
+                GL20C.glUniform4fv(u[18], stack.floats(SkyEvents.DOGS));
+                GL20C.glUniform4fv(u[19], stack.floats(SkyEvents.PILLAR));
+                GL20C.glUniform4fv(u[20], stack.floats(SkyEvents.PILLAR_COL));
+                GL20C.glUniform4fv(u[21], stack.floats(SkyEvents.METEOR));
+                eventsUploaded = true;
+            } else if (eventsUploaded) {
+                // Once, when the last one has faded: clear the block (the moon reads the eclipse row every frame).
+                GL20C.glUniform4fv(u[17], stack.callocFloat(32));
+                eventsUploaded = false;
+            }
             GpuTimers.begin("stratos_sky_draw");
             GlslPrograms.drawFullscreen();
             GpuTimers.end("stratos_sky_draw");
@@ -294,7 +383,7 @@ public final class SkyPass {
             }
             drawnFrame = frame;
         } finally {
-            for (int unit = 10; unit <= 15; unit++) {
+            for (int unit = 9; unit <= 15; unit++) {
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE0 + unit);
                 GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
             }
@@ -401,7 +490,8 @@ public final class SkyPass {
         viewU = locate(skyViewProgram, "u_Transmittance", "u_MultiScatter", "u_SkyCam");
         skyU = locate(skyProgram, "u_Transmittance", "u_SkyView", "u_Noise", "u_PackSun", "u_PackMoon", "u_InvViewProj",
                 "u_SkyCam", "u_Sun", "u_Moon", "u_MoonPhase", "u_Stars", "u_Look", "u_Fog", "u_Time", "u_Look2",
-                "u_Map", "u_CloudMap");
+                "u_Map", "u_CloudMap", "u_Fx", "u_Dog", "u_Pillar", "u_PillarCol", "u_Meteor", "u_Nebula", "u_Neb", "u_NebGlow");
+        eventsUploaded = false;
         transmittance = lut("Stratos sky transmittance", TRANS_W, TRANS_H, false);
         multiScatter = lut("Stratos sky multiple scattering", MS_SIZE, MS_SIZE, false);
         skyView = lut("Stratos sky view", VIEW_W, VIEW_H, true);
@@ -434,6 +524,7 @@ public final class SkyPass {
         }
         transmittance = multiScatter = skyView = 0;
         releaseSkyMap();
+        NebulaImages.release();
         if (fbo != 0) {
             GpuResources.deleteFramebuffer(fbo);
             fbo = 0;

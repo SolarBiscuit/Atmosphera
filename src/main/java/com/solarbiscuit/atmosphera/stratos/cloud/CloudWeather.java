@@ -27,6 +27,17 @@ public final class CloudWeather {
     /** Smoothed inputs. */
     static float rain;
     static float thunder;
+    /**
+     * 0.6.4: how heavy the weather is for the clouds, sky and fog, 0..1 ({@link #wetness}). Vanilla rain always reaches
+     * level 1, so the level alone made every shower as dark as a downpour.
+     */
+    static float wet;
+    /**
+     * How heavy ordinary rain is, 0..1: 0.8 is steady rain, with an overcast, mid-grey deck. 1 is the downpour look
+     * every rain had before 0.6.4. (0.65, the first value, measured nearly as bright as a clear sky: 172/255 against
+     * 97/255 at 1.) A weather mod (Vapora) will set it per spell.
+     */
+    private static volatile float rainIntensity = 0.8f;
     private static float dryness;
     private static float coldness;
     private static float targetDry;
@@ -42,6 +53,8 @@ public final class CloudWeather {
     /** 0..1 storm towers (cumulonimbus). */
     static float towers;
     static float darken;
+    /** 0.8.0: mammatus under the storm deck, 0..1: with the thunder, and fading over about 3 minutes after it. */
+    static float mammatus;
     static float midCover;
     static float highCover;
     static float hazeDistance;
@@ -49,6 +62,11 @@ public final class CloudWeather {
     /** 0.5.0: the surface wind's direction (unit, xz) for anvils, shelf clouds, rain shafts and orographic lift. */
     static float windX = 1f;
     static float windZ;
+
+    /** The cirrus deck's cover now, 0..1 (halos and sun dogs form in it). Valid while the clouds are drawn. */
+    public static float cirrusCover() {
+        return highCover;
+    }
 
     static float dryness() {
         return Math.max(0f, dryness);
@@ -58,7 +76,24 @@ public final class CloudWeather {
         return Math.max(0f, coldness);
     }
 
+    /** Sets how heavy rain is, 0 (drizzle) to 1 (downpour); see {@link #wetness}. Any thread. */
+    public static void rainIntensity(float intensity) {
+        rainIntensity = clamp01(intensity);
+    }
+
+    /**
+     * The weather's weight for darkening and thickening, from the game's rain and thunder levels: the rain level times
+     * the rain's intensity, with thunder raising it to a full downpour. Shared by the clouds, the sky, the fog and the
+     * haze so they agree.
+     */
+    public static float wetness(float rainLevel, float thunderLevel) {
+        float intensity = rainIntensity;
+        return clamp01(rainLevel) * clamp01(intensity + (1f - intensity) * clamp01(thunderLevel));
+    }
+
     private static final WindVector WIND = new WindVector();
+    private static final com.solarbiscuit.atmosphera.lib.world.Weather.Sample WEATHER =
+            new com.solarbiscuit.atmosphera.lib.world.Weather.Sample();
     private static ClientLevel lastLevel;
 
     private CloudWeather() {
@@ -76,8 +111,15 @@ public final class CloudWeather {
         boolean followWeather = StratosConfig.weather.get();
         float rainNow = followWeather ? level.getRainLevel(partialTick) : 0f;
         float thunderNow = followWeather ? level.getThunderLevel(partialTick) : 0f;
+        // 0.8.3: how heavy the rain is, from the library's Weather service when a weather mod (Vapora) states it;
+        // otherwise ordinary rain (0.8).
+        com.solarbiscuit.atmosphera.lib.world.Weather.current(level, partialTick, WEATHER);
+        rainIntensity = WEATHER.modelled && rainNow > 0.05f ? clamp01(WEATHER.intensity / rainNow) : 0.8f;
         rain = approach(rain, rainNow, dt, 6f);
         thunder = approach(thunder, thunderNow, dt, 6f);
+        wet = wetness(rain, thunder);
+        // Share of a full downpour, for terms that are not zero in clear weather.
+        float heavy = rain > 1e-3f ? wet / rain : 0f;
 
         if (--biomeCountdown <= 0) {
             biomeCountdown = 30;
@@ -98,20 +140,27 @@ public final class CloudWeather {
 
         CloudStyle style = CloudStyle.current();
         float amount = StratosConfig.coverage.get().floatValue();
-        float clear = style.coverage() * amount * (1f - 0.55f * dryness);
-        coverage = clamp01(clear + rain * (0.95f - clear) + thunder * 0.03f);
-        stratiform = clamp01(rain * (1f - thunder) * 0.9f + coldness * 0.35f);
+        // 0.9.0: amounts per cloud type (cumulus is the main amount; stratus beyond 100% also closes the sky a little).
+        float stratus = StratosConfig.stratusAmount.get().floatValue();
+        float alto = StratosConfig.altocumulusAmount.get().floatValue();
+        float cirrus = StratosConfig.cirrusAmount.get().floatValue();
+        float clear = clamp01(style.coverage() * amount * (1f - 0.55f * dryness) + 0.2f * Math.max(stratus - 1f, 0f));
+        // 0.6.4: steady rain is an overcast deck with thinner, brighter patches (0.92); a downpour closes it (0.95).
+        coverage = clamp01(clear + rain * (0.78f + 0.17f * heavy - clear) + thunder * 0.03f);
+        stratiform = clamp01(rain * (1f - thunder) * (0.6f + 0.3f * heavy)
+                + (coldness * 0.35f * Math.min(stratus, 1f) + 0.45f * Math.max(stratus - 1f, 0f)) * (1f - thunder));
         towers = clamp01(thunder * 1.2f);
+        mammatus = Math.max(towers, mammatus - dt / 180f);
         float maxDepth = StratosConfig.lowThickness.get();
         base = StratosConfig.lowBase.get() - 25f * rain;
         // Fair-weather cumulus use part of the deck, sheets less, storm towers all of it.
         // Nimbostratus in rain is thick too (0.1.1: was thinned, which left a featureless film).
-        thickness = maxDepth * (0.62f + 0.38f * towers + 0.1f * rain);
-        darken = style.rainDarken() * clamp01(rain * 0.8f + thunder * 0.4f);
+        thickness = maxDepth * (0.62f + 0.38f * towers + 0.1f * wet);
+        darken = style.rainDarken() * clamp01(wet * 0.8f + thunder * 0.4f);
         // In rain the altocumulus melts into a thin veil (the shader blends it by the stratiform weight).
-        midCover = StratosConfig.midDeck.get() ? clamp01(0.5f - 0.3f * dryness) * (1f - 0.3f * rain) : 0f;
-        highCover = StratosConfig.highDeck.get() ? clamp01(0.6f + 0.2f * coldness - 0.4f * rain) : 0f;
-        hazeDistance = 3200f - 2100f * rain;
+        midCover = StratosConfig.midDeck.get() ? clamp01((0.5f - 0.3f * dryness) * alto) * (1f - 0.3f * wet) : 0f;
+        highCover = StratosConfig.highDeck.get() ? clamp01((0.6f + 0.2f * coldness - 0.4f * wet) * cirrus) : 0f;
+        hazeDistance = 3200f - 2100f * wet;
 
         // Drift: the low deck with the surface wind; the high deck faster and turned (wind shear aloft).
         Wind.global(level, partialTick, WIND);

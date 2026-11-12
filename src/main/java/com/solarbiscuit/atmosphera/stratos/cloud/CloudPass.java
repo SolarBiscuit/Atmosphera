@@ -150,6 +150,11 @@ public final class CloudPass {
         return drawing() ? CloudWeather.base + CloudWeather.thickness : Float.NaN;
     }
 
+    /** How much of the sun the clouds cover now, 0..1 (the sun probe), for the bows. */
+    public static float sunCover() {
+        return SunProbe.sunCover();
+    }
+
     /** The cloud map for the sky view (0.4.0), or 0 when the clouds were not drawn lately. Render thread. */
     public static int cloudMap() {
         return mapTexture != 0 && AtmosClient.frame() - mapFrame <= 2 ? mapTexture : 0;
@@ -201,6 +206,7 @@ public final class CloudPass {
 
         Vec3 camera = ctx.camera();
         CloudWeather.update(level, ctx.partialTick(), camera.x, camera.y, camera.z);
+        com.solarbiscuit.atmosphera.stratos.sky.SkyEvents.ensure(level, ctx.partialTick());
         Lightning.update(level, ctx.partialTick(), camera.x, camera.y, camera.z, CloudWeather.thunder,
                 CloudWeather.base, CloudWeather.thickness,
                 (float) Math.min(0.25, Math.max(0.0, com.solarbiscuit.atmosphera.lib.wind.AtmosClock.deltaSeconds())));
@@ -299,9 +305,11 @@ public final class CloudPass {
                 GL20C.glUniform1i(p.u(2), 15);
                 GL20C.glUniform1i(p.u(3), 12);
                 GL20C.glUniformMatrix4fv(p.u(4), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
-                // z: from above the altocumulus the thin decks lie in front of the low deck.
+                // z: from above the altocumulus the thin decks lie in front of the low deck. 0.8.0: with the
+                // altocumulus in the low deck's output the thin target holds the cirrus alone.
+                int thinFrom = altoVolume(quality) ? StratosConfig.highHeight.get() : StratosConfig.midHeight.get();
                 GL20C.glUniform4f(p.u(5), StratosConfig.farDistance.get(), StratosConfig.debug.get() > 0 ? 1f : 0f,
-                        camera.y > StratosConfig.midHeight.get() ? 1f : 0f, 0f);
+                        camera.y > thinFrom ? 1f : 0f, 0f);
                 GL11C.glEnable(GL11C.GL_BLEND);
                 GL14C.glBlendFuncSeparate(GL11C.GL_ONE, GL11C.GL_SRC_ALPHA, GL11C.GL_ZERO, GL11C.GL_ONE);
                 GlslPrograms.drawFullscreen();
@@ -375,7 +383,7 @@ public final class CloudPass {
                 GpuTimers.end("stratos_cloudmap");
             }
         } finally {
-            for (int unit = 9; unit <= 15; unit++) {
+            for (int unit = 8; unit <= 15; unit++) {
                 GL13C.glActiveTexture(GL13C.GL_TEXTURE0 + unit);
                 GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
                 GL11C.glBindTexture(GL12C.GL_TEXTURE_3D, 0);
@@ -518,7 +526,7 @@ public final class CloudPass {
         float sy = SunSource.dirY();
         float sz = SunSource.dirZ();
         float sun = smoothstep(-0.14f, 0.04f, sy);
-        float overcast = 1f - 0.55f * CloudWeather.rain - 0.2f * CloudWeather.thunder;
+        float overcast = 1f - 0.55f * CloudWeather.wet - 0.2f * CloudWeather.thunder;
         if (sun > 0.02f) {
             float warm = smoothstep(-0.06f, 0.42f, sy);
             float intensity = 1.15f * sun * overcast;
@@ -526,7 +534,9 @@ public final class CloudPass {
             put(V_LIGHT_COL, intensity, intensity * lerp(0.42f, 0.96f, warm), intensity * lerp(0.2f, 0.9f, warm),
                     style.forward());
         } else {
-            float moon = 0.22f * level.getMoonBrightness() * overcast;
+            // 0.9.0: a lunar eclipse takes most of the moonlight off the clouds.
+            float moon = 0.22f * level.getMoonBrightness() * overcast
+                    * com.solarbiscuit.atmosphera.stratos.sky.SkyEvents.moonLightScale();
             put(V_LIGHT_DIR, -sx, -sy, -sz, 0f);
             put(V_LIGHT_COL, 0.78f * moon, 0.86f * moon, moon, style.forward());
         }
@@ -556,7 +566,15 @@ public final class CloudPass {
             tb *= (float) (cloud.z / max);
         }
         put(V_TINT, tr, tg, tb, StratosConfig.brightness.get().floatValue());
-        put(V_MARCH, StratosConfig.marchNear.get() ? 1f : 0f, 0f, StratosConfig.marchThirdOctave.get() ? 1f : 0f, 0f);
+        // 0.8.0: mammatus under the storm deck (thunder, a few minutes after it, or forced), and the low sun that
+        // shines in under the deck and lights their sunward sides.
+        int pouches = com.solarbiscuit.atmosphera.stratos.sky.SkyEvents.mammatusMode();
+        float mammatus = blocky || !StratosConfig.mammatus.get() || pouches == com.solarbiscuit.atmosphera.stratos.sky.SkyEvents.OFF
+                ? 0f : pouches == com.solarbiscuit.atmosphera.stratos.sky.SkyEvents.ON ? 1f
+                : StratosConfig.stormShapes.get() ? CloudWeather.mammatus : 0f;
+        float underSun = 0.8f * smoothstep(0.34f, 0.08f, sy) * smoothstep(-0.06f, 0f, sy);
+        put(V_MARCH, StratosConfig.marchNear.get() ? 1f : 0f, mammatus, StratosConfig.marchThirdOctave.get() ? 1f : 0f,
+                underSun);
         // 0.5.0 "Storm": anvils, mammatus and shelf clouds in thunder, rain shafts in rain, lightning, and the regional
         // map (biomes and terrain around). Each switchable.
         boolean storms = StratosConfig.stormShapes.get() && !blocky;
@@ -571,6 +589,11 @@ public final class CloudPass {
         put(V_LOCAL, CloudWeather.dryness(), CloudWeather.coldness(), StratosConfig.regional.get() ? 1f : 0f, 0f);
     }
 
+    /** Whether the altocumulus is marched as a thin volume (0.8.0) instead of drawn as a flat layer. */
+    private static boolean altoVolume(StratosConfig.Quality quality) {
+        return quality.temporal && StratosConfig.altoVolume.get() && CloudStyle.current().blockCell() <= 0f;
+    }
+
     private static void setCommon(Program p, PostPasses.Context ctx, Vec3 camera, StratosConfig.Quality quality,
                                   long frame, boolean temporal, boolean dh, MemoryStack stack) {
         if (preparedFrame != frame) {
@@ -583,6 +606,18 @@ public final class CloudPass {
         GL20C.glUniform1i(p.u(Program.DH), 11);
         GL20C.glUniform1i(p.u(Program.LAYER_TEX), 10);
         GL20C.glUniform1i(p.u(Program.REGION), 9);
+        // 0.6.5: the sky's horizon colours, so far clouds fade to the colour the terrain's haze and the sky use.
+        // 0.8.0: the altocumulus as a thin volume on the tiers with a temporal resolve (45 blocks deep, 4 steps, 6 on
+        // HIGH); LOW and the blocky style keep the flat layer.
+        boolean altoVolume = altoVolume(quality);
+        GL20C.glUniform4f(p.u(Program.ALTO), altoVolume ? 1f : 0f, 45f, quality == StratosConfig.Quality.HIGH ? 6f : 4f,
+                V[V_DECK + 3] * 1.6f);
+        int skyTable = com.solarbiscuit.atmosphera.stratos.sky.SkyPass.horizonLut();
+        bind(8, GL11C.GL_TEXTURE_2D, skyTable);
+        GL20C.glUniform1i(p.u(Program.SKY_HZ), 8);
+        GL20C.glUniform4f(p.u(Program.SKY_HZ_P), com.solarbiscuit.atmosphera.stratos.sky.SkyPass.sunAzimuth(),
+                com.solarbiscuit.atmosphera.stratos.sky.SkyPass.horizonAngle(), skyTable != 0 ? 1f : 0f,
+                com.solarbiscuit.atmosphera.stratos.sky.SkyPass.horizonExposure());
         GL20C.glUniformMatrix4fv(p.u(Program.INV_VIEW_PROJ), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
         GL20C.glUniform4i(p.u(Program.INFO), lowDivisor, (int) (frame & 0xFFFF), quality.steps, quality.lightSteps);
         GL20C.glUniform4f(p.u(Program.FLAGS), preparedDetail ? 1f : 0f, temporal ? 1f : 0f, StratosConfig.debug.get(),
@@ -668,12 +703,12 @@ public final class CloudPass {
                 "u_Info", "u_Flags", "u_Camera", "u_Forward", "u_Deck", "u_Type", "u_Layers", "u_ShapeOff",
                 "u_WeatherOff", "u_Scale", "u_Block", "u_LightDir", "u_LightCol", "u_AmbTop", "u_AmbBottom", "u_Haze",
                 "u_Tint", "u_Probe0", "u_Probe1", "u_LayerTex", "u_March", "u_Storm", "u_Flash", "u_RegionOff",
-                "u_Local", "u_Region"};
+                "u_Local", "u_Region", "u_SkyHz", "u_SkyHzP", "u_Alto"};
         static final int DEPTH = 0, SHAPE = 1, DETAIL = 2, WEATHER = 3, DH = 4, INV_VIEW_PROJ = 5, INFO = 6, FLAGS = 7,
                 CAMERA = 8, FORWARD = 9, DECK = 10, TYPE = 11, LAYERS = 12, SHAPE_OFF = 13, WEATHER_OFF = 14, SCALE = 15,
                 BLOCK = 16, LIGHT_DIR = 17, LIGHT_COL = 18, AMB_TOP = 19, AMB_BOTTOM = 20, HAZE = 21, TINT = 22,
                 PROBE0 = 23, PROBE1 = 24, LAYER_TEX = 25, MARCH = 26, STORM = 27, FLASH = 28, REGION_OFF = 29,
-                LOCAL = 30, REGION = 31;
+                LOCAL = 30, REGION = 31, SKY_HZ = 32, SKY_HZ_P = 33, ALTO = 34;
 
         /** Programs built from {@link CloudGlsl#COMMON} locate the common names; others name their own. */
         static Program of(String name, String fragment, String... uniforms) {

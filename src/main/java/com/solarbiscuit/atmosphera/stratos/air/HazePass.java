@@ -12,6 +12,7 @@ import com.solarbiscuit.atmosphera.lib.gpu.PostPasses;
 import com.solarbiscuit.atmosphera.lib.gpu.RenderTargets;
 import com.solarbiscuit.atmosphera.stratos.Stratos;
 import com.solarbiscuit.atmosphera.stratos.StratosConfig;
+import com.solarbiscuit.atmosphera.stratos.cloud.CloudWeather;
 import com.solarbiscuit.atmosphera.stratos.sky.SkyPass;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -65,8 +66,8 @@ public final class HazePass {
         long frame = AtmosClient.frame();
         FrameUniforms.update(frame);
         float partial = ctx.partialTick();
-        float rain = level.getRainLevel(partial);
         float thunder = level.getThunderLevel(partial);
+        float rain = CloudWeather.wetness(level.getRainLevel(partial), thunder);
         // Distance (beyond the start) at which half the light is lost.
         float half = 2600f / Math.max(0.05f, amount * AirFog.hazeScale()) * (1f - 0.55f * rain - 0.15f * thunder);
         int dh = StratosConfig.dhDepth.get() ? DhBridge.depthTexture(frame) : 0;

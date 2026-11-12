@@ -4,7 +4,7 @@ import com.solarbiscuit.atmosphera.lib.options.AtmosConfig;
 import com.solarbiscuit.atmosphera.lib.options.AtmosOption;
 import com.solarbiscuit.atmosphera.lib.options.ChangeTier;
 
-/** {@code config/Atmosphera/stratos-client.toml} and the "Stratos (clouds)" Video Settings page. */
+/** {@code config/Atmosphera/stratos-client.toml} and the "Stratos" Video Settings page. */
 public final class StratosConfig {
     /** Cost tier of the cloud march. Divisor: the march runs at 1/divisor of the screen's width and height. */
     public enum Quality {
@@ -47,6 +47,9 @@ public final class StratosConfig {
     public static AtmosOption<Quality> quality;
     public static AtmosOption<Style> style;
     public static AtmosOption<Double> coverage;
+    public static AtmosOption<Double> stratusAmount;
+    public static AtmosOption<Double> altocumulusAmount;
+    public static AtmosOption<Double> cirrusAmount;
     public static AtmosOption<Double> density;
     public static AtmosOption<Integer> lowBase;
     public static AtmosOption<Integer> lowThickness;
@@ -68,6 +71,7 @@ public final class StratosConfig {
     public static AtmosConfig.FeatureSwitch shadows;
     public static AtmosOption<Boolean> marchNear;
     public static AtmosOption<Boolean> marchThirdOctave;
+    public static AtmosOption<Boolean> altoVolume;
     public static AtmosOption<Boolean> stormShapes;
     public static AtmosOption<Boolean> rainShafts;
     public static AtmosOption<Boolean> lightning;
@@ -88,12 +92,38 @@ public final class StratosConfig {
     public static AtmosOption<Double> starAmount;
     public static AtmosOption<Double> milkyWay;
     public static AtmosOption<Double> airglow;
+    public static AtmosOption<Boolean> events;
+    public static AtmosOption<Double> eventFrequency;
+    public static AtmosOption<Boolean> halo;
+    public static AtmosOption<Boolean> sunDogs;
+    public static AtmosOption<Boolean> circumzenithalArc;
+    public static AtmosOption<Boolean> greenFlash;
+    public static AtmosOption<Boolean> rainbow;
+    public static AtmosOption<Double> rainbowChance;
+    public static AtmosOption<Boolean> fogbow;
+    public static AtmosOption<Boolean> lightPillars;
+    public static AtmosOption<Double> lightPillarChance;
+    public static AtmosOption<Boolean> aurora;
+    public static AtmosOption<Double> auroraBrightness;
+    public static AtmosOption<Boolean> noctilucent;
+    public static AtmosOption<Double> noctilucentChance;
+    public static AtmosOption<Boolean> zodiacalLight;
+    public static AtmosOption<Boolean> meteors;
+    public static AtmosOption<Boolean> nebula;
+    public static AtmosOption<Double> nebulaChance;
+    public static AtmosOption<Double> nebulaBrightness;
+    public static AtmosOption<Double> nebulaSize;
+    public static AtmosOption<com.solarbiscuit.atmosphera.stratos.sky.NebulaImages.Detail> nebulaDetail;
+    public static AtmosOption<Boolean> bloodMoon;
+    public static AtmosOption<Double> bloodMoonChance;
+    public static AtmosOption<Boolean> mammatus;
+    public static AtmosOption<java.util.List<? extends String>> forceEvents;
 
     private StratosConfig() {
     }
 
     static void register() {
-        AtmosConfig config = AtmosConfig.create(Stratos.MOD_ID, "Stratos (sky and clouds)");
+        AtmosConfig config = AtmosConfig.create(Stratos.MOD_ID, "Stratos");
         config.section("clouds", "Clouds: weather-driven decks of volumetric cumulus, sheets and towers, with altocumulus "
                 + "and cirrus above.");
         clouds = config.featureSwitch("enabled", true, "Stratos clouds",
@@ -104,9 +134,16 @@ public final class StratosConfig {
                         + "of the resolution, smoothed over frames. HIGH: half resolution, more detail.");
         style = config.choice("style", Style.STRATOS, ChangeTier.LIVE, "Cloud style",
                 "STRATOS: realistic. SOFT: softer and rounder, a little cheaper. BLOCKY: vanilla-like blocks of cloud.");
-        coverage = config.percent("coverage", 0.5, 0.0, 1.0, ChangeTier.LIVE, "Cloud amount",
-                "How much of the sky is cloudy in clear weather: 50% gives scattered fair-weather clouds, 100% an "
-                        + "unbroken layer. Rain and storms add more.");
+        coverage = config.percent("coverage", 0.5, 0.0, 1.0, ChangeTier.LIVE, "Cumulus amount",
+                "How much of the sky the low heaped clouds cover in clear weather: 50% gives scattered fair-weather "
+                        + "cumulus, 100% an unbroken layer. Rain and storms add more.");
+        stratusAmount = config.percent("stratus_amount", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Stratus amount",
+                "How much of the low cloud is flat sheets (stratus) rather than heaps: 0% none in fair weather, 100% "
+                        + "the default (some in cold biomes), 200% grey layers on most days. Rain is stratus anyway.");
+        altocumulusAmount = config.percent("altocumulus_amount", 1.0, 0.0, 2.0, ChangeTier.LIVE,
+                "Altocumulus amount", "How much of the sky the middle layer of rippled cloud covers.");
+        cirrusAmount = config.percent("cirrus_amount", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Cirrus amount",
+                "How much of the sky the high, wispy ice clouds cover.");
         density = config.percent("density", 0.7, 0.2, 2.0, ChangeTier.LIVE, "Cloud thickness",
                 "How opaque the clouds are (70% by default).");
         weather = config.toggle("follow_weather", true, ChangeTier.LIVE, "Clouds follow the weather",
@@ -155,7 +192,8 @@ public final class StratosConfig {
                 "Clouds shade the ground, water and distant terrain, and light pours through their gaps (with Lumis: "
                         + "on terrain, LODs, entities and in the light shafts).");
 
-        config.section("storm", "Storms and regions (0.5.0 \"Storm\"). All on by default.");
+        config.section("storm", "Storms and regions (0.5.0 \"Storm\"). All on by default; TOML only since 0.6.4.");
+        config.fileOnly(true);
         stormShapes = config.toggle("storm_shapes", true, ChangeTier.LIVE, "Storm clouds",
                 "In thunder, towers spread into anvils with mammatus pouches beneath, and a dark shelf cloud runs ahead "
                         + "of each storm.");
@@ -167,6 +205,10 @@ public final class StratosConfig {
         regional = config.toggle("regional", true, ChangeTier.LIVE, "Regional clouds",
                 "Clouds follow the biomes around you, not only your own: fewer over deserts, flatter over snow. "
                         + "Hills and mountains facing the wind gather cloud; their lee sides clear.");
+
+        mammatus = config.toggle("mammatus", true, ChangeTier.LIVE, "Mammatus",
+                "Pouches hanging under the anvil and the base of a storm deck, in thunder and for a while after it.");
+        config.fileOnly(false);
 
         config.section("air", "The air (0.6.0 \"Air\"): biome fog, weather fog, dawn mist and distant haze. All on by default; "
                 + "while Atmospherics is installed it keeps the fog unless the overlap option below is off.");
@@ -188,6 +230,11 @@ public final class StratosConfig {
                         + "ones are close to the camera.");
         marchThirdOctave = config.toggle("third_octave", false, ChangeTier.LIVE, "Third scattering octave",
                 "A softer third light-scattering term that lifts deep cloud cores out of grey.");
+        config.fileOnly(true);
+        altoVolume = config.toggle("alto_volume", true, ChangeTier.LIVE, "Volumetric altocumulus",
+                "MEDIUM and HIGH quality: the altocumulus is a thin volume with rounded tops and shaded bases, lit like "
+                        + "the low clouds. Off: the flat layer of 0.7 and earlier (LOW always uses it).");
+        config.fileOnly(false);
 
         config.section("sky", "The sky (0.3.0 \"Firmament\"): a physically based atmosphere, sun, moon and stars. Every sky "
                 + "feature is on by default and has its own switch; chance events are seeded by the day, so every player "
@@ -215,6 +262,72 @@ public final class StratosConfig {
                 "Brightness of the faint band of the galaxy.");
         airglow = config.percent("airglow", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Airglow",
                 "The faint green and amber glow low in a dark night sky.");
+
+        config.section("events", "Sky events (0.7.0 \"Optics\", 0.8.0 \"Night\", 0.9.0 \"Omens\"): the sky's occasional sights. "
+                + "Which days and nights have them is a hash of the in-game day, so every player on a server sees the same "
+                + "ones. /stratos skyeffect <name> on|off|auto shows one at will.");
+        events = config.toggle("enabled", true, ChangeTier.LIVE, "Sky events",
+                "Halos and sun dogs, rainbows, light pillars, auroras, noctilucent clouds, meteors, nebulae and the blood "
+                        + "moon appear now and then. Off: none of them (the command still lists them).");
+        eventFrequency = config.percent("frequency", 1.0, 0.0, 3.0, ChangeTier.LIVE, "Sky event frequency",
+                "How often the chance events come, as a multiple of each one's own chance. 100% keeps them rare.");
+        config.fileOnly(true);
+        halo = config.toggle("halo", true, ChangeTier.LIVE, "Halo",
+                "A 22-degree ring round the sun, or a bright moon, on some days with cirrus.");
+        sunDogs = config.toggle("sun_dogs", true, ChangeTier.LIVE, "Sun dogs",
+                "Bright spots left and right of a low sun, on some days with cirrus.");
+        circumzenithalArc = config.toggle("circumzenithal_arc", true, ChangeTier.LIVE, "Circumzenithal arc",
+                "A short rainbow-coloured arc high overhead, with the sun 5 to 31 degrees up, on a few days with cirrus.");
+        greenFlash = config.toggle("green_flash", true, ChangeTier.LIVE, "Green flash",
+                "The last sliver of the setting or rising sun flashes green, at about one sunset in ten.");
+        rainbow = config.toggle("rainbow", true, ChangeTier.LIVE, "Rainbow",
+                "A rainbow opposite a low sun when a shower ends (and a pale moonbow by a bright moon), now and then.");
+        rainbowChance = config.percent("rainbow_chance", 0.025, 0.0, 1.0, ChangeTier.LIVE, "Rainbow chance",
+                "The chance that a shower's end leaves a rainbow (0.025 = 2.5%).");
+        fogbow = config.toggle("fogbow", true, ChangeTier.LIVE, "Fogbow",
+                "A broad white bow opposite a low sun in dawn mist, on a few mornings.");
+        lightPillars = config.toggle("light_pillars", true, ChangeTier.LIVE, "Light pillars",
+                "Columns of light over distant lights on cold, clear nights in snowy biomes, and over a sun at the "
+                        + "horizon there.");
+        lightPillarChance = config.percent("light_pillar_chance", 0.10, 0.0, 1.0, ChangeTier.LIVE, "Light pillar chance",
+                "The share of nights with light pillars in snowy biomes (0.10 = one night in ten).");
+        aurora = config.toggle("aurora", true, ChangeTier.LIVE, "Aurora",
+                "Curtains of green and red light in the northern night sky. Often in snowy biomes and high up, following "
+                        + "an activity that rises and falls over several days; elsewhere only in the strongest storms.");
+        auroraBrightness = config.percent("aurora_brightness", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Aurora brightness",
+                "Brightness of the aurora.");
+        noctilucent = config.toggle("noctilucent", true, ChangeTier.LIVE, "Noctilucent clouds",
+                "Rippled blue-white clouds low over the horizon in deep twilight, on some evenings and mornings in "
+                        + "snowy biomes.");
+        noctilucentChance = config.percent("noctilucent_chance", 0.08, 0.0, 1.0, ChangeTier.LIVE,
+                "Noctilucent cloud chance", "The share of twilights with noctilucent clouds in snowy biomes (0.08 = 8%).");
+        zodiacalLight = config.toggle("zodiacal_light", true, ChangeTier.LIVE, "Zodiacal light",
+                "A faint cone of light along the sun's path, on about one dark, clear night in four.");
+        meteors = config.toggle("meteors", true, ChangeTier.LIVE, "Meteors",
+                "A shooting star now and then on dark nights, and a meteor shower on a few nights.");
+        nebula = config.toggle("nebula", true, ChangeTier.LIVE, "Nebulae",
+                "On some clear nights a nebula shows among the stars: a real telescope image (Hubble and Webb), a "
+                        + "different one and in a different place each time. Resource packs can add their own.");
+        nebulaChance = config.percent("nebula_chance", 0.20, 0.0, 1.0, ChangeTier.LIVE, "Nebula chance",
+                "The share of clear nights with a nebula (0.20 = one night in five).");
+        nebulaBrightness = config.percent("nebula_brightness", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Nebula brightness",
+                "100% is vivid, like a long-exposure photograph; about 25% is what the eye would see.");
+        nebulaSize = config.percent("nebula_size", 1.0, 0.5, 2.0, ChangeTier.LIVE, "Nebula size",
+                "How much of the sky a nebula covers: 100% is 20 to 32 degrees across.");
+        nebulaDetail = config.choice("nebula_detail", com.solarbiscuit.atmosphera.stratos.sky.NebulaImages.Detail.HIGH,
+                ChangeTier.LIVE, "Nebula detail",
+                "The resolution the image is kept at. High: the full image (up to 4096 pixels, about 85 MB of video "
+                        + "memory while a nebula shows), sharp under a zoom. Medium: 2048 (21 MB). Low: 1024 (5 MB).");
+        bloodMoon = config.toggle("blood_moon", true, ChangeTier.LIVE, "Blood moon",
+                "On a rare full-moon night the moon passes through the Earth's shadow and turns copper red (Stratos's "
+                        + "moon, the resource pack's, vanilla's and skybox moons alike).");
+        bloodMoonChance = config.percent("blood_moon_chance", 0.01, 0.0, 1.0, ChangeTier.LIVE, "Blood moon chance",
+                "The share of full-moon nights with a lunar eclipse (0.01 = 1%).");
+        forceEvents = config.stringList("force", java.util.List.of(), ChangeTier.LIVE, "Forced sky events",
+                "Effects to show whatever the day's luck says, by the names of /stratos skyeffect: for example "
+                        + "[\"aurora\", \"nebula:3\"] (the third nebula image), or \"-rainbow\" to keep one off. Like the command, "
+                        + "but kept across sessions; the command wins while it is used.");
+        config.fileOnly(false);
         config.register();
     }
 }
