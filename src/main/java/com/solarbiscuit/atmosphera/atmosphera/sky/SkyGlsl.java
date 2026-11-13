@@ -249,6 +249,8 @@ final class SkyGlsl {
             uniform vec4 u_NebFrame;           // x, y: cosine and sine of the nebula frame's turn; z: how many show
             uniform vec4 u_PackDisc;           // 0.10.0: x the resource pack moon's disc radius in moon radii
             uniform vec4 u_Twinkle;            // 0.10.0: x smoothed seconds, y amount, z speed
+            uniform sampler2D u_MoonMap;       // 0.12.0: NASA LRO near-side map (R8, longitude -90..90 across)
+            uniform vec4 u_MoonInfo;           // 0.12.0: x the map's width in texels (0 while loading), y fade-in
             uniform mat4 u_InvViewProj;
             uniform vec4 u_SkyCam;    // x camera radius (km), y sun cosine-zenith, z sun azimuth (radians), w exposure
             uniform vec4 u_Sun;       // xyz towards the sun (world), w angular radius (radians)
@@ -321,8 +323,9 @@ final class SkyGlsl {
                 vec3 cell = floor(c * 160.0);
                 float h = sky_hash(cell);
                 vec3 star = vec3(0.0);
-                // 0.6.0: the star amount sets the share of cells holding a star (7% at 100%, at most 25%).
-                if (h > 1.0 - min(0.07 * u_Look2.y * (1.0 + crowd), 0.25)) {
+                // 0.6.0: the star amount sets the share of cells holding a star; 0.12.0: 2.1% at 100% (the old 30%,
+                // the old 100% was too crowded), at most 25%.
+                if (h > 1.0 - min(0.021 * u_Look2.y * (1.0 + crowd), 0.25)) {
                     vec3 centre = (cell + 0.5 + (vec3(sky_hash(cell + 1.7), sky_hash(cell + 3.1), sky_hash(cell + 5.3)) - 0.5) * 0.6) / 160.0;
                     // Squared angle from the chord (no acos): |a - b|^2 = 2 (1 - cos) ~ angle^2 for small angles.
                     vec3 toStar = normalize(centre) - c;
@@ -421,16 +424,30 @@ final class SkyGlsl {
                 vec3 normal = vec3(d, sqrt(1.0 - rr));
                 float phase = u_MoonPhase.x;
                 vec3 light = vec3(sin(phase), 0.0, cos(phase));
-                // Explicit mip levels: texels of the layer texture per screen pixel across the disc.
-                float perPixel = 512.0 * u_Fog.w / sin(rad);
-                float craters = textureLod(u_Noise, d * 0.35 + vec2(0.31, 0.47), log2(max(perPixel * 0.35, 1.0))).b;
+                // Disc radii per screen pixel (for explicit mip levels).
+                float perPixel = u_Fog.w / sin(rad);
+                // 0.12.0: a smooth stand-in while the map loads (soft maria only; the crater texture drew dots).
                 float maria = smoothstep(0.42, 0.62,
-                        textureLod(u_Noise, d * 0.12 + vec2(0.7, 0.2), log2(max(perPixel * 0.12, 1.0))).a);
-                vec3 albedo = vec3(0.92, 0.9, 0.86) * (0.78 + 0.22 * craters) * (1.0 - 0.32 * maria);
-                float lit = max(dot(normal, light), 0.0);
-                // The lit part is as bright at a crescent as at full moon; earthshine on the dark side; a soft
-                // terminator. The glow around it follows the moon's brightness.
-                vec3 col = albedo * (smoothstep(0.0, 0.08, lit) * (0.35 + 0.65 * lit) + 0.025);
+                        textureLod(u_Noise, d * 0.12 + vec2(0.7, 0.2), log2(max(512.0 * perPixel * 0.12, 1.0))).a);
+                vec3 albedo = vec3(0.9, 0.88, 0.85) * (1.0 - 0.3 * maria);
+                if (u_MoonInfo.x > 0.0) {
+                    // NASA's LRO map of the near side on the sphere: longitude across, latitude up (north at the top).
+                    float lon = sky_atan2(normal.x, normal.z);
+                    float lat = sky_asin(clamp(normal.y, -1.0, 1.0));
+                    vec2 muv = vec2(lon / SKY_PI + 0.5, 0.5 - lat / SKY_PI);
+                    float texels = perPixel * u_MoonInfo.x * 0.5 / max(normal.z, 0.15);
+                    float surface = textureLod(u_MoonMap, muv, log2(max(texels, 1.0))).r;
+                    albedo = mix(albedo, vec3(0.95, 0.93, 0.9) * (0.22 + 0.98 * surface), u_MoonInfo.y);
+                }
+                // Lommel-Seeliger shading (the moon's dust: a full moon is evenly bright to its edge, a crescent stays
+                // bright on its lit side), a little Lambert for depth, a soft terminator, and earthshine on the dark
+                // side, strongest near new moon. The glow around it follows the moon's brightness.
+                float ci = dot(normal, light);
+                float ce = max(normal.z, 0.02);
+                float lit = ci > 0.0 ? 2.0 * ci / (ci + ce) * 0.85 + 0.15 * ci : 0.0;
+                lit *= smoothstep(-0.02, 0.05, ci);
+                float earthshine = 0.035 * (0.5 - 0.5 * cos(phase));
+                vec3 col = albedo * (lit * 0.9 + earthshine);
                 // 0.10.0: in totality the red glow round the disc is a third as bright (only a slight radiance).
                 return sky_eclipse(col * 1.1, d, 1.0) + glowCol * glow * u_MoonPhase.y * (1.0 - 0.67 * total);
             }
@@ -545,6 +562,25 @@ final class SkyGlsl {
                             sum += mix(vec3(0.15, 1.0, 0.45), vec3(0.75, 0.2, 0.65), fk * fk) * ridge * (1.0 - 0.6 * fk);
                         }
                         add += sum * (0.15 * u_Fx[1].x) * mask * rays;
+                    }
+                }
+                if (u_Fx[7].w > 0.0 && dir.y > -0.01) {
+                    // 0.12.0: Aurora Australis, a low glowing band over the southern horizon (+z): only its upper rays
+                    // rise above the horizon, as seen far from the pole. Pink-red and violet, a faint green at its foot.
+                    float mask = smoothstep(-0.2, 0.7, hz.y) * smoothstep(-0.01, 0.02, dir.y)
+                            * (1.0 - smoothstep(0.1, 0.24, dir.y));
+                    if (mask > 0.01) {
+                        float t = u_Fx[6].x;
+                        float az = sky_atan2(dir.x, dir.z);
+                        vec2 q = vec2(az * 1.6 + t * 0.002, dir.y * 6.0 + u_Fx[6].y * 2.0);
+                        float rays = textureLod(u_Noise, vec2(az * 2.4 + u_Fx[6].y * 5.0, t * 0.0008), 0.0).a;
+                        rays = 0.45 + 1.1 * smoothstep(0.35, 0.85, rays);
+                        float ridge = 1.0 - abs(2.0 * textureLod(u_Noise, q * vec2(1.0, 0.25), 0.0).a - 1.0);
+                        ridge *= ridge;
+                        float up = clamp(dir.y / 0.2, 0.0, 1.0);
+                        vec3 col = mix(vec3(0.25, 0.9, 0.5), mix(vec3(0.95, 0.25, 0.45), vec3(0.6, 0.25, 0.85), up),
+                                smoothstep(0.0, 0.25, up));
+                        add += col * (0.2 * u_Fx[7].w) * mask * rays * (0.5 + 0.8 * ridge);
                     }
                 }
                 if (u_Fx[1].y > 0.0 && dir.y > 0.02) {

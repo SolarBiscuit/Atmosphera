@@ -9,5 +9,10 @@
   "tint": 0.35,
   "fog_distance": 0.9,
   "haze": 1.5,
-  "mist": 0.1
+  "mist": 0.1,
+  "storm": {
+    "fog_color": "#C9A46E",
+    "fog_distance": 0.3,
+    "haze": 3.0
+  }
 }

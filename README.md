@@ -10,7 +10,7 @@ Clouds, sky and air for the [Atmosphera](https://github.com/SolarBiscuit/Atmosph
 weather-driven, volumetric clouds that look like a shaderpack's, at about the cost of vanilla's, **without a
 shaderpack**. Later releases add the rest of the sky (see the roadmap).
 
-**Current version: 0.11.0** (needs AtmospheraLib 0.9.1 or newer).
+**Current version: 0.12.0** (needs AtmospheraLib 0.10.1 or newer).
 
 > **Client-only.** Never required on a server, never blocks joining one. Off while a shaderpack is active (packs draw
 > their own clouds) and under Fabulous graphics.
@@ -43,7 +43,7 @@ switch and is on by default.
   - weather fog, and mist at dawn over water and wet ground;
   - a distant haze over terrain and LODs;
   - it defers to Atmospherics while that is installed.
-- **Stars:** a "Star amount" option (0-300%) beside "Star brightness".
+- **Stars:** a "Star amount" option (0-300%) beside "Star brightness". Since 0.12.0, 100% is what 30% was before; older settings are rescaled.
 - **Reload in game:** `/atmosphera reload` re-reads the settings; `/atmosphera reload shaders` (and the "Reload
   Atmosphera" key) also rebuilds Atmosphera's shaders.
 - **Option sections** in `atmosphera-client.toml`: "storm" (storm clouds, rain shafts, lightning, regional clouds) and
@@ -64,6 +64,16 @@ switch and is on by default.
 - **Command:** `/atmosphera skyeffect nebula on <n> [count]` shows image n, and count nebulae.
 - **Credits:** see `THIRD_PARTY_NOTICES.md` (in the jar, and in `src/main/resources/`).
 
+## Golden hour (0.12.0)
+- **Moon:** NASA's Lunar Reconnaissance Orbiter map of the near side on a sphere, with Lommel-Seeliger shading and
+  earthshine. The option "Moon detail" sets the map size (HIGH 4096, MEDIUM 2048, LOW 1024).
+- **Sunrise and sunset:** cloud light comes from the sky model's transmittance at each deck's height, and clouds no
+  longer burn white towards the sun.
+- **Aurora Australis:** a very rare band of pink, red and violet light over the southern horizon in icy biomes on dark,
+  clear nights (option "Aurora Australis" and its chance).
+- **With Stratos 0.4.0:** sandstorm air in deserts and badlands, and clouds by kind of rain.
+- The resource pack's sun and moon are on by default for new settings.
+
 ## Cost
 One post pass at a fraction of the screen's resolution, smoothed over frames.
 
@@ -76,10 +86,11 @@ One post pass at a fraction of the screen's resolution, smoothed over frames.
 These are targets; they are **not yet measured**. Only AMD hardware has been tested.
 
 ## Install
-1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.9.1 or newer.
+1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.10.1 or newer.
 2. Put the Atmosphera jar in `mods/`.
 3. Options are on the "Atmosphera (clouds)" page in Video Settings (with Xenon or Embeddium), and in
    `config/Atmosphera/atmosphera-client.toml`.
+   Settings are grouped in dropdowns (closed by default, and remembered). Without Xenon or Embeddium, the library's own settings screen (the "Atmosphera..." button in Video Settings, or Config in the Mods list) shows the same groups.
 
 ## Roadmap
 | Release | Theme |
@@ -91,7 +102,7 @@ These are targets; they are **not yet measured**. Only AMD hardware has been tes
 | 0.5.0 "Storm" | Anvils, rain shafts, lightning inside clouds, clouds on mountains (built) |
 | 0.6.0 "Air" | Biome fog and haze (built; 0.4.0 to 0.6.0 released together as 0.6.x, current 0.6.3) |
 | 0.7.0 "Optics" | Halos, sun dogs, rainbows, the green flash |
-| 0.8.0 "Night" | Aurora, noctilucent clouds, meteors |
+| 0.8.0 "Night" | Aurora, Aurora Australis (0.12.0), noctilucent clouds, meteors |
 
 Details: `docs/roadmap/ATMOSPHERA-MOD-ROADMAP.md` and `docs/ATMOSPHERA-MOD-DESIGN.md` in the Atmosphera repository.
 

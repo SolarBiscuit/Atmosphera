@@ -31,6 +31,7 @@ public final class Atmosphera {
             return;
         }
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
+        convertStarAmount();
         AtmospheraConfig.register();
         CloudPass.register();
         SkyPass.register();
@@ -51,6 +52,42 @@ public final class Atmosphera {
             e.registerReloadListener(new CloudStyle.Loader());
             e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.air.AirData.Loader());
             e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.sky.NebulaImages.Loader());
+            e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.sky.MoonMap.Loader());
         });
+    }
+
+    /**
+     * 0.12.0: the star amount's 100% is what 30% was before. A file written before 0.12.0 (no {@code star_scale} key)
+     * keeps the look it had: a changed amount v becomes v / 0.3 (at most 300%); the default 100% stays 100%, which is
+     * the new, sparser default. Runs once, before Forge reads the file; Forge then adds {@code star_scale = 2}.
+     */
+    private static void convertStarAmount() {
+        java.nio.file.Path file = com.solarbiscuit.atmosphera.lib.options.AtmosPaths.file(MOD_ID + "-client.toml");
+        try {
+            if (!java.nio.file.Files.exists(file)) {
+                return;
+            }
+            String text = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
+            if (text.contains("star_scale")) {
+                return;
+            }
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(?m)^(\\s*star_amount\\s*=\\s*)([0-9.eE+-]+)").matcher(text);
+            if (!m.find()) {
+                return;
+            }
+            double old = Double.parseDouble(m.group(2));
+            if (Math.abs(old - 1.0) < 1e-6) {
+                return;
+            }
+            double now = Math.min(3.0, old / 0.3);
+            String converted = text.substring(0, m.start(2)) + String.format(java.util.Locale.ROOT, "%.3f", now)
+                    + text.substring(m.end(2));
+            java.nio.file.Files.writeString(file, converted, java.nio.charset.StandardCharsets.UTF_8);
+            LOGGER.info("[Atmosphera] Atmosphera 0.12.0 rescaled the star amount: {} is now {} (same number of stars).",
+                    old, now);
+        } catch (java.io.IOException | RuntimeException e) {
+            LOGGER.warn("[Atmosphera] Could not convert the star amount in {}: {}", file, e.toString());
+        }
     }
 }

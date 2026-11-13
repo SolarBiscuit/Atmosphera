@@ -94,6 +94,8 @@ public final class CloudWeather {
         return clamp01(rainLevel) * clamp01(intensity + (1f - intensity) * clamp01(thunderLevel));
     }
 
+    /** 0.12.0: the weather kind's shift, -1 (drizzle, light rain) .. 1 (heavy rain, storm), eased. */
+    public static float kind;
     private static final WindVector WIND = new WindVector();
     private static final com.solarbiscuit.atmosphera.lib.world.Weather.Sample WEATHER =
             new com.solarbiscuit.atmosphera.lib.world.Weather.Sample();
@@ -118,9 +120,17 @@ public final class CloudWeather {
         // otherwise ordinary rain (0.8).
         com.solarbiscuit.atmosphera.lib.world.Weather.current(level, partialTick, WEATHER);
         rainIntensity = WEATHER.modelled && rainNow > 0.05f ? clamp01(WEATHER.intensity / rainNow) : 0.8f;
+        // 0.12.0 (Stratos 0.4.0 "Kinds"): heavy rain and storms under darker, closer, lower decks; drizzle and light
+        // rain under paler ones. Eased like the rain itself.
+        float kindTarget = !WEATHER.modelled ? 0f : switch (WEATHER.type) {
+            case HEAVY_RAIN, STORM -> 1f;
+            case DRIZZLE, LIGHT_RAIN -> -1f;
+            default -> 0f;
+        };
         rain = approach(rain, rainNow, dt, 6f);
         thunder = approach(thunder, thunderNow, dt, 6f);
         wet = wetness(rain, thunder);
+        kind = approach(kind, kindTarget, dt, 10f);
         // Share of a full downpour, for terms that are not zero in clear weather.
         float heavy = rain > 1e-3f ? wet / rain : 0f;
 
@@ -149,7 +159,7 @@ public final class CloudWeather {
         float cirrus = AtmospheraConfig.cirrusAmount.get().floatValue();
         float clear = clamp01(style.coverage() * amount * (1f - 0.55f * dryness) + 0.2f * Math.max(stratus - 1f, 0f));
         // 0.6.4: steady rain is an overcast deck with thinner, brighter patches (0.92); a downpour closes it (0.95).
-        coverage = clamp01(clear + rain * (0.78f + 0.17f * heavy - clear) + thunder * 0.03f);
+        coverage = clamp01(clear + rain * (0.78f + 0.17f * heavy - clear) + thunder * 0.03f + 0.05f * rain * Math.max(kind, 0f));
         stratiform = clamp01(rain * (1f - thunder) * (0.6f + 0.3f * heavy)
                 + (coldness * 0.35f * Math.min(stratus, 1f) + 0.45f * Math.max(stratus - 1f, 0f)) * (1f - thunder));
         towers = clamp01(thunder * 1.2f);
@@ -158,11 +168,11 @@ public final class CloudWeather {
         // are cut (CloudPass), so the fading tail does not linger.
         mammatus = approach(mammatus, towers, dt, towers > mammatus ? 20f : 25f);
         float maxDepth = AtmospheraConfig.lowThickness.get();
-        base = AtmospheraConfig.lowBase.get() - 25f * rain;
+        base = AtmospheraConfig.lowBase.get() - 25f * rain - 10f * rain * Math.max(kind, 0f);
         // Fair-weather cumulus use part of the deck, sheets less, storm towers all of it.
         // Nimbostratus in rain is thick too (0.1.1: was thinned, which left a featureless film).
         thickness = maxDepth * (0.62f + 0.38f * towers + 0.1f * wet);
-        darken = style.rainDarken() * clamp01(wet * 0.8f + thunder * 0.4f);
+        darken = style.rainDarken() * clamp01(wet * 0.8f + thunder * 0.4f + rain * (kind > 0f ? 0.15f : 0.1f) * kind);
         // In rain the altocumulus melts into a thin veil (the shader blends it by the stratiform weight).
         midCover = AtmospheraConfig.midDeck.get() ? clamp01((0.5f - 0.3f * dryness) * alto) * (1f - 0.3f * wet) : 0f;
         highCover = AtmospheraConfig.highDeck.get() ? clamp01((0.6f + 0.2f * coldness - 0.4f * wet) * cirrus) : 0f;

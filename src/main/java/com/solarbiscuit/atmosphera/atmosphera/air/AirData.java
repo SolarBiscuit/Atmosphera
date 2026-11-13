@@ -30,13 +30,18 @@ import java.util.Map;
  * {@code tint} blends the game's fog colour towards {@code fog_color}; {@code fog_distance} scales how far terrain fog
  * starts and ends (below 1 = denser); {@code haze} scales the distant haze; {@code mist} scales the dawn mist. The
  * highest-priority profile matching a biome wins; a biome no file names gets the neutral profile.
+ * <p>
+ * 0.12.0: an optional {@code "storm": {"fog_color": "#C9A46E", "fog_distance": 0.3, "haze": 3.0}} is how the air looks
+ * while it rains there (in dry sandy biomes, where no rain falls, a sandstorm): the fog closes in towards that colour
+ * instead of turning grey.
  */
 public final class AirData {
     /** One profile; colours linear 0..1 like the game's fog colour. */
-    public record Profile(float r, float g, float b, float tint, float fogDistance, float haze, float mist) {
+    public record Profile(float r, float g, float b, float tint, float fogDistance, float haze, float mist,
+                          float stormR, float stormG, float stormB, float storm, float stormFog, float stormHaze) {
     }
 
-    public static final Profile NEUTRAL = new Profile(0f, 0f, 0f, 0f, 1f, 1f, 1f);
+    public static final Profile NEUTRAL = new Profile(0f, 0f, 0f, 0f, 1f, 1f, 1f, 0f, 0f, 0f, 0f, 1f, 1f);
 
     private record Entry(List<ResourceLocation> ids, List<TagKey<Biome>> tags, int priority, Profile profile) {
     }
@@ -114,9 +119,15 @@ public final class AirData {
             }
         }
         int rgb = json.has("fog_color") ? Integer.parseInt(json.get("fog_color").getAsString().replace("#", ""), 16) : 0;
+        JsonObject storm = json.has("storm") && json.get("storm").isJsonObject() ? json.getAsJsonObject("storm") : null;
+        int srgb = storm != null && storm.has("fog_color")
+                ? Integer.parseInt(storm.get("fog_color").getAsString().replace("#", ""), 16) : rgb;
         Profile profile = new Profile(((rgb >> 16) & 0xFF) / 255f, ((rgb >> 8) & 0xFF) / 255f, (rgb & 0xFF) / 255f,
                 f(json, "tint", 0f), Math.max(0.1f, f(json, "fog_distance", 1f)), Math.max(0f, f(json, "haze", 1f)),
-                Math.max(0f, f(json, "mist", 1f)));
+                Math.max(0f, f(json, "mist", 1f)),
+                ((srgb >> 16) & 0xFF) / 255f, ((srgb >> 8) & 0xFF) / 255f, (srgb & 0xFF) / 255f, storm != null ? 1f : 0f,
+                storm != null ? Math.max(0.05f, f(storm, "fog_distance", 1f)) : 1f,
+                storm != null ? Math.max(0f, f(storm, "haze", 1f)) : 1f);
         return new Entry(ids, tags, json.has("priority") ? json.get("priority").getAsInt() : 0, profile);
     }
 

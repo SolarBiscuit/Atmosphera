@@ -26,6 +26,10 @@ public final class SkyModel {
 
     private static float[] zenith;
     private static float[] horizon;
+    /** 0.12.0: sunlight (transmittance to the sun) by height ({@link #SUN_HEIGHTS}) and sun cosine-zenith. */
+    private static float[] sunlight;
+    /** Heights (km above the ground) of the sunlight table; the clouds use 2 (low deck) and 8 (high clouds). */
+    static final double[] SUN_HEIGHTS = {0.2, 1.0, 2.0, 4.0, 8.0, 12.0};
     private static double[] ms;
 
     private SkyModel() {
@@ -72,6 +76,72 @@ public final class SkyModel {
         }
         zenith = z;
         horizon = hz;
+        // 0.12.0: sunlight at several heights. The sun is evaluated a disc radius higher (its upper limb), so a height
+        // keeps a little light until the whole disc has set there, which also softens the Earth's shadow.
+        float[] sl = new float[SUN_HEIGHTS.length * SUN_STEPS * 3];
+        for (int hi = 0; hi < SUN_HEIGHTS.length; hi++) {
+            double rh = RG + SUN_HEIGHTS[hi];
+            for (int s = 0; s < SUN_STEPS; s++) {
+                double muS = s / (double) (SUN_STEPS - 1) * 2.0 - 1.0;
+                transmittance(rh, Math.min(1.0, muS + 0.0047), out);
+                int at = (hi * SUN_STEPS + s) * 3;
+                sl[at] = (float) out[0];
+                sl[at + 1] = (float) out[1];
+                sl[at + 2] = (float) out[2];
+            }
+        }
+        sunlight = sl;
+    }
+
+    /**
+     * The colour of sunlight at a height (0.12.0): the sun's transmittance through the atmosphere to {@code heightKm}
+     * for the sun's cosine-zenith, relative to the noon sun at that height, with part of the brightness lost near the
+     * horizon given back (the eye adapts; the colour keeps its red). 0 once the Earth's shadow covers that height.
+     * Returns false before the tables are built. Any thread.
+     */
+    public static boolean sunlight(double heightKm, float muS, float[] out) {
+        float[] table = sunlight;
+        if (table == null) {
+            return false;
+        }
+        double hk = Math.max(SUN_HEIGHTS[0], Math.min(SUN_HEIGHTS[SUN_HEIGHTS.length - 1], heightKm));
+        int h0 = 0;
+        while (h0 < SUN_HEIGHTS.length - 2 && SUN_HEIGHTS[h0 + 1] < hk) {
+            h0++;
+        }
+        float fh = (float) ((hk - SUN_HEIGHTS[h0]) / (SUN_HEIGHTS[h0 + 1] - SUN_HEIGHTS[h0]));
+        float x = (Math.max(-1f, Math.min(1f, muS)) * 0.5f + 0.5f) * (SUN_STEPS - 1);
+        int s0 = Math.min((int) x, SUN_STEPS - 2);
+        float fs = x - s0;
+        float lum = 0f;
+        float noon = 0f;
+        for (int c = 0; c < 3; c++) {
+            float a = mix(table[(h0 * SUN_STEPS + s0) * 3 + c], table[(h0 * SUN_STEPS + s0 + 1) * 3 + c], fs);
+            float b = mix(table[((h0 + 1) * SUN_STEPS + s0) * 3 + c], table[((h0 + 1) * SUN_STEPS + s0 + 1) * 3 + c], fs);
+            float n0 = table[(h0 * SUN_STEPS + SUN_STEPS - 1) * 3 + c];
+            float n1 = table[((h0 + 1) * SUN_STEPS + SUN_STEPS - 1) * 3 + c];
+            float noonC = Math.max(mix(n0, n1, fh), 1e-4f);
+            out[c] = mix(a, b, fh) / noonC;
+        }
+        lum = 0.2126f * out[0] + 0.7152f * out[1] + 0.0722f * out[2];
+        if (lum > 1e-5f) {
+            float lift = (float) Math.pow(Math.min(1f, lum), -0.55);
+            out[0] *= lift;
+            out[1] *= lift;
+            out[2] *= lift;
+        }
+        noon = Math.max(out[0], Math.max(out[1], out[2]));
+        if (noon > 1.4f) {
+            float k = 1.4f / noon;
+            out[0] *= k;
+            out[1] *= k;
+            out[2] *= k;
+        }
+        return true;
+    }
+
+    private static float mix(float a, float b, float t) {
+        return a + (b - a) * t;
     }
 
     public static boolean ready() {

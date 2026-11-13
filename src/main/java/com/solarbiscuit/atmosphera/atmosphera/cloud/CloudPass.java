@@ -457,15 +457,17 @@ public final class CloudPass {
     }
 
     /** The per-frame uniform values (0.2.0: computed once per frame, then only uploaded per program). */
-    private static final float[] V = new float[80];
+    private static final float[] V = new float[88];
+    private static final float[] LOW_SUN = new float[3];
+    private static final float[] HIGH_SUN = new float[3];
     private static final int V_CAMERA = 0, V_FORWARD = 4, V_DECK = 8, V_TYPE = 12, V_LAYERS = 16, V_SHAPE_OFF = 20,
             V_WEATHER_OFF = 24, V_SCALE = 28, V_BLOCK = 32, V_LIGHT_DIR = 36, V_LIGHT_COL = 40, V_AMB_TOP = 44,
             V_AMB_BOTTOM = 48, V_HAZE = 52, V_TINT = 56, V_MARCH = 60, V_STORM = 64, V_FLASH = 68, V_REGION = 72,
-            V_LOCAL = 76;
+            V_LOCAL = 76, V_LIGHT_HIGH = 80, V_AMB_SUN = 84;
     private static final int[] V_SLOTS = {Program.CAMERA, Program.FORWARD, Program.DECK, Program.TYPE, Program.LAYERS,
             Program.SHAPE_OFF, Program.WEATHER_OFF, Program.SCALE, Program.BLOCK, Program.LIGHT_DIR, Program.LIGHT_COL,
             Program.AMB_TOP, Program.AMB_BOTTOM, Program.HAZE, Program.TINT, Program.MARCH, Program.STORM,
-            Program.FLASH, Program.REGION_OFF, Program.LOCAL};
+            Program.FLASH, Program.REGION_OFF, Program.LOCAL, Program.LIGHT_HIGH, Program.AMB_SUN};
     private static long preparedFrame = -1;
     private static boolean preparedDetail;
 
@@ -528,20 +530,37 @@ public final class CloudPass {
         float sx = SunSource.dirX();
         float sy = SunSource.dirY();
         float sz = SunSource.dirZ();
-        float sun = smoothstep(-0.14f, 0.04f, sy);
         float overcast = 1f - 0.55f * CloudWeather.wet - 0.2f * CloudWeather.thunder;
-        if (sun > 0.02f) {
+        // 0.12.0: the sunlight's colour from the sky model's transmittance at each deck's height (low deck about 2 km,
+        // altocumulus and cirrus about 8 km): red and dim through the long path at sunrise and sunset, and gone once
+        // the Earth's shadow reaches that height, so high clouds glow on after the low ones have gone grey. Before the
+        // sky tables exist (or without them), the fixed ramp of 0.11.
+        boolean modelled = com.solarbiscuit.atmosphera.atmosphera.sky.SkyModel.sunlight(2.0, sy, LOW_SUN)
+                && com.solarbiscuit.atmosphera.atmosphera.sky.SkyModel.sunlight(8.0, sy, HIGH_SUN);
+        if (!modelled) {
+            float sun = smoothstep(-0.14f, 0.04f, sy);
             float warm = smoothstep(-0.06f, 0.42f, sy);
-            float intensity = 1.15f * sun * overcast;
+            LOW_SUN[0] = HIGH_SUN[0] = sun;
+            LOW_SUN[1] = HIGH_SUN[1] = sun * lerp(0.42f, 0.96f, warm);
+            LOW_SUN[2] = HIGH_SUN[2] = sun * lerp(0.2f, 0.9f, warm);
+        }
+        float sunHigh = Math.max(HIGH_SUN[0], Math.max(HIGH_SUN[1], HIGH_SUN[2]));
+        if (sunHigh > 0.02f) {
+            float intensity = 1.15f * overcast;
             put(V_LIGHT_DIR, sx, sy, sz, 1f);
-            put(V_LIGHT_COL, intensity, intensity * lerp(0.42f, 0.96f, warm), intensity * lerp(0.2f, 0.9f, warm),
-                    style.forward());
+            put(V_LIGHT_COL, intensity * LOW_SUN[0], intensity * LOW_SUN[1], intensity * LOW_SUN[2], style.forward());
+            put(V_LIGHT_HIGH, intensity * HIGH_SUN[0], intensity * HIGH_SUN[1], intensity * HIGH_SUN[2], 0f);
+            // Golden hour: the sunlit horizon bounces warm light onto the sides and bases facing the sun.
+            float golden = (1f - smoothstep(0.03f, 0.35f, sy)) * smoothstep(-0.12f, -0.02f, sy) * overcast;
+            put(V_AMB_SUN, 0.22f * golden * LOW_SUN[0], 0.22f * golden * LOW_SUN[1], 0.22f * golden * LOW_SUN[2], golden);
         } else {
             // 0.9.0: a lunar eclipse takes most of the moonlight off the clouds.
             float moon = 0.22f * level.getMoonBrightness() * overcast
                     * com.solarbiscuit.atmosphera.atmosphera.sky.SkyEvents.moonLightScale();
             put(V_LIGHT_DIR, -sx, -sy, -sz, 0f);
             put(V_LIGHT_COL, 0.78f * moon, 0.86f * moon, moon, style.forward());
+            put(V_LIGHT_HIGH, 0.78f * moon, 0.86f * moon, moon, 0f);
+            put(V_AMB_SUN, 0f, 0f, 0f, 0f);
         }
         // 0.3.0: the drawn sky's colour (Atmosphera's own sky through the lib's SkySource), else vanilla's.
         if (!SkySource.skyColor(SKY)) {
@@ -707,12 +726,12 @@ public final class CloudPass {
                 "u_Info", "u_Flags", "u_Camera", "u_Forward", "u_Deck", "u_Type", "u_Layers", "u_ShapeOff",
                 "u_WeatherOff", "u_Scale", "u_Block", "u_LightDir", "u_LightCol", "u_AmbTop", "u_AmbBottom", "u_Haze",
                 "u_Tint", "u_Probe0", "u_Probe1", "u_LayerTex", "u_March", "u_Storm", "u_Flash", "u_RegionOff",
-                "u_Local", "u_Region", "u_SkyHz", "u_SkyHzP", "u_Alto"};
+                "u_Local", "u_Region", "u_SkyHz", "u_SkyHzP", "u_Alto", "u_LightColHigh", "u_AmbSun"};
         static final int DEPTH = 0, SHAPE = 1, DETAIL = 2, WEATHER = 3, DH = 4, INV_VIEW_PROJ = 5, INFO = 6, FLAGS = 7,
                 CAMERA = 8, FORWARD = 9, DECK = 10, TYPE = 11, LAYERS = 12, SHAPE_OFF = 13, WEATHER_OFF = 14, SCALE = 15,
                 BLOCK = 16, LIGHT_DIR = 17, LIGHT_COL = 18, AMB_TOP = 19, AMB_BOTTOM = 20, HAZE = 21, TINT = 22,
                 PROBE0 = 23, PROBE1 = 24, LAYER_TEX = 25, MARCH = 26, STORM = 27, FLASH = 28, REGION_OFF = 29,
-                LOCAL = 30, REGION = 31, SKY_HZ = 32, SKY_HZ_P = 33, ALTO = 34;
+                LOCAL = 30, REGION = 31, SKY_HZ = 32, SKY_HZ_P = 33, ALTO = 34, LIGHT_HIGH = 35, AMB_SUN = 36;
 
         /** Programs built from {@link CloudGlsl#COMMON} locate the common names; others name their own. */
         static Program of(String name, String fragment, String... uniforms) {

@@ -24,3 +24,6 @@ Usage terms: https://esahubble.org/copyright/ and https://esawebb.org/copyright/
 
 Resource packs can add their own images to `assets/<namespace>/textures/nebula/` (JPEG or PNG, any shape); their
 credits are the pack's to give.
+
+## Moon map (0.12.0)
+`assets/atmosphera/textures/moon/near_side.jpg`: the near side (longitude -90 to +90 degrees) of the Lunar Reconnaissance Orbiter colour map "lroc_color_poles_8k.tif" from the CGI Moon Kit, converted to greyscale. Credit: NASA's Scientific Visualization Studio (visualizer Ernie Wright, scientist Noah Petro), https://svs.gsfc.nasa.gov/4720/, from data of the LRO camera and laser altimeter teams. NASA imagery is generally not subject to copyright in the United States; see NASA's media usage guidelines.

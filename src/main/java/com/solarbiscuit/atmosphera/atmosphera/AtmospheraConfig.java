@@ -88,6 +88,10 @@ public final class AtmospheraConfig {
     public static AtmosOption<Boolean> packSunMoon;
     public static AtmosOption<Double> sunSize;
     public static AtmosOption<Double> moonSize;
+    /** 0.12.0: the size of the moon's surface map. */
+    public static AtmosOption<com.solarbiscuit.atmosphera.atmosphera.sky.MoonMap.Detail> moonDetail;
+    /** 0.12.0: marks a file whose star amount uses the 0.12.0 scale (see Atmosphera.convertStarAmount). */
+    public static AtmosOption<Integer> starScale;
     public static AtmosOption<Double> stars;
     public static AtmosOption<Double> starAmount;
     public static AtmosOption<Double> milkyWay;
@@ -105,6 +109,9 @@ public final class AtmospheraConfig {
     public static AtmosOption<Double> lightPillarChance;
     public static AtmosOption<Boolean> aurora;
     public static AtmosOption<Double> auroraBrightness;
+    /** 0.12.0: the southern aurora. */
+    public static AtmosOption<Boolean> auroraAustralis;
+    public static AtmosOption<Double> auroraAustralisChance;
     public static AtmosOption<Boolean> noctilucent;
     public static AtmosOption<Double> noctilucentChance;
     public static AtmosOption<Boolean> zodiacalLight;
@@ -127,7 +134,7 @@ public final class AtmospheraConfig {
 
     static void register() {
         AtmosConfig config = AtmosConfig.create(Atmosphera.MOD_ID, "Atmosphera");
-        config.section("clouds", "Clouds: weather-driven decks of volumetric cumulus, sheets and towers, with altocumulus "
+        config.section("clouds", "Clouds", "Clouds: weather-driven decks of volumetric cumulus, sheets and towers, with altocumulus "
                 + "and cirrus above.");
         clouds = config.featureSwitch("enabled", true, "Atmosphera clouds",
                 "Replaces vanilla's clouds with Atmosphera's. Off under a shaderpack (it draws its own) and under "
@@ -153,7 +160,7 @@ public final class AtmospheraConfig {
                 "Rain turns the sky into a low grey sheet, thunder builds towering storm clouds, dry biomes have fewer "
                         + "clouds and cold ones flatter ones. Off: always fair-weather clouds.");
 
-        config.section("decks", "Cloud decks: heights and motion.");
+        config.section("decks", "Cloud layers", "Cloud decks: heights and motion.");
         lowBase = config.slider("low_base", 200, 120, 400, 5, ChangeTier.LIVE, "Low cloud base",
                 "World height of the base of the low clouds (vanilla clouds are at 192).");
         lowThickness = config.slider("low_thickness", 260, 40, 600, 10, ChangeTier.LIVE, "Low cloud depth",
@@ -171,7 +178,7 @@ public final class AtmospheraConfig {
         shear = config.percent("shear", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Wind shear",
                 "High clouds move faster and turn away from the surface wind, as the wind does aloft.");
 
-        config.section("view", "Distance and look.");
+        config.section("view", "View and shadows", "Distance and look.");
         farDistance = config.slider("far_distance", 6000, 1000, 16000, 250, ChangeTier.LIVE, "Cloud distance",
                 "How far clouds are drawn (blocks). Distant clouds cost little; Distant Horizons and Voxy terrain "
                         + "still covers them correctly.");
@@ -188,15 +195,16 @@ public final class AtmospheraConfig {
                 "On: Atmosphera clouds show only while vanilla's Clouds option is not OFF. Off: they always show.");
         dhDepth = config.toggle("distant_horizons_depth", true, ChangeTier.LIVE, "Distant Horizons terrain",
                 "Clouds stop at Distant Horizons' LOD terrain (needs Distant Horizons).");
+        config.groupAtEnd("advanced", "Advanced");
         debug = config.slider("debug", 0, 0, 3, 1, ChangeTier.LIVE, "Debug view",
                 "0 off, 1 transmittance, 2 march limit, 3 coverage. For testing.");
-        config.section("shade", "Cloud shadows (0.2.0).");
+        config.section("shade", "View and shadows", "Cloud shadows (0.2.0).");
+        config.group("view", "View and shadows");
         shadows = config.featureSwitch("shadows", true, "Cloud shadows",
                 "Clouds shade the ground, water and distant terrain, and light pours through their gaps (with Lumis: "
                         + "on terrain, LODs, entities and in the light shafts).");
 
-        config.section("storm", "Storms and regions (0.5.0 \"Storm\"). All on by default; TOML only since 0.6.4.");
-        config.fileOnly(true);
+        config.section("storm", "Storm clouds", "Storms and regions (0.5.0 \"Storm\"). All on by default (TOML only from 0.6.4 to 0.11.0).");
         stormShapes = config.toggle("storm_shapes", true, ChangeTier.LIVE, "Storm clouds",
                 "In thunder, towers spread into anvils with mammatus pouches beneath, and a dark shelf cloud runs ahead "
                         + "of each storm.");
@@ -211,9 +219,8 @@ public final class AtmospheraConfig {
 
         mammatus = config.toggle("mammatus", true, ChangeTier.LIVE, "Mammatus",
                 "Pouches hanging under the anvil and the base of a storm deck, in thunder and for a while after it.");
-        config.fileOnly(false);
 
-        config.section("air", "The air (0.6.0 \"Air\"): biome fog, weather fog, dawn mist and distant haze. All on by default; "
+        config.section("air", "Air and fog", "The air (0.6.0 \"Air\"): biome fog, weather fog, dawn mist and distant haze. All on by default; "
                 + "while Atmospherics is installed it keeps the fog unless the overlap option below is off.");
         air = config.featureSwitch("enabled", true, "Atmosphera air",
                 "Fog coloured and thickened by the biomes around you (green-grey swamps, dusty deserts, cool taiga, "
@@ -227,19 +234,18 @@ public final class AtmospheraConfig {
         morningMist = config.toggle("morning_mist", true, ChangeTier.LIVE, "Dawn mist",
                 "Mist low over water and wet ground around sunrise, lifting as the sun climbs.");
 
-        config.section("march", "Cloud march tuning (0.2.0). Each item is measured on its own before it becomes a default.");
+        config.section("march", "Advanced", "Cloud march tuning (0.2.0). Each item is measured on its own before it becomes a default.");
+        config.groupAtEnd("advanced", "Advanced");
         marchNear = config.toggle("near_disparity", false, ChangeTier.LIVE, "Near steps in 1/distance",
                 "With the camera in or just under the clouds, space the near steps evenly in 1/distance, so the first "
                         + "ones are close to the camera.");
         marchThirdOctave = config.toggle("third_octave", false, ChangeTier.LIVE, "Third scattering octave",
                 "A softer third light-scattering term that lifts deep cloud cores out of grey.");
-        config.fileOnly(true);
         altoVolume = config.toggle("alto_volume", true, ChangeTier.LIVE, "Volumetric altocumulus",
                 "MEDIUM and HIGH quality: the altocumulus is a thin volume with rounded tops and shaded bases, lit like "
                         + "the low clouds. Off: the flat layer of 0.7 and earlier (LOW always uses it).");
-        config.fileOnly(false);
 
-        config.section("sky", "The sky (0.3.0 \"Firmament\"): a physically based atmosphere, sun, moon and stars. Every sky "
+        config.section("sky", "Sky", "The sky (0.3.0 \"Firmament\"): a physically based atmosphere, sun, moon and stars. Every sky "
                 + "feature is on by default and has its own switch; chance events are seeded by the day, so every player "
                 + "on a server sees the same ones.");
         sky = config.featureSwitch("enabled", true, "Atmosphera sky",
@@ -252,33 +258,44 @@ public final class AtmospheraConfig {
         horizonBlend = config.slider("horizon_blend", 6, 0, 20, 1, ChangeTier.LIVE, "Horizon haze",
                 "How far above the horizon (degrees) the sky fades into the fog colour, so distant terrain meets the "
                         + "sky without a seam (biome fog from Atmospherics comes through).");
-        packSunMoon = config.toggle("pack_sun_moon", false, ChangeTier.LIVE, "Resource pack sun and moon",
+        packSunMoon = config.toggle("pack_sun_moon", true, ChangeTier.LIVE, "Resource pack sun and moon",
                 "Use the resource pack's sun and moon textures instead of Atmosphera's own sun and moon.");
         sunSize = config.percent("sun_size", 1.0, 0.25, 4.0, ChangeTier.LIVE, "Sun size",
                 "100% is a disc 1.5 degrees across (the real sun is half that; vanilla's is far larger).");
         moonSize = config.percent("moon_size", 1.0, 0.25, 4.0, ChangeTier.LIVE, "Moon size",
                 "100% is a disc 2.2 degrees across.");
+        moonDetail = config.choice("moon_detail", com.solarbiscuit.atmosphera.atmosphera.sky.MoonMap.Detail.HIGH, ChangeTier.LIVE,
+                "Moon detail", "Size of the moon's surface map (NASA's Lunar Reconnaissance Orbiter photos of the near side), "
+                        + "for Atmosphera's own moon: HIGH 4096 (about 22 MB of video memory, sharp when zoomed in), MEDIUM "
+                        + "2048, LOW 1024. Not used while the resource pack's moon is on.");
+        config.group("night_sky", "Stars and night sky");
         stars = config.percent("stars", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Star brightness", "Brightness of the stars.");
         twinkle = config.percent("twinkle", 0.4, 0.0, 1.0, ChangeTier.LIVE, "Star twinkle",
                 "How much the stars twinkle: most near the horizon, less for the brightest (40% by default).");
         twinkleSpeed = config.percent("twinkle_speed", 0.5, 0.1, 2.0, ChangeTier.LIVE, "Twinkle speed",
                 "How fast the stars twinkle (50%: a slow shimmer).");
         starAmount = config.percent("star_amount", 1.0, 0.0, 3.0, ChangeTier.LIVE, "Star amount",
-                "How many stars there are. 100% is a clear country sky, 300% a mountain-top sky; 0% hides them.");
+                "How many stars there are. 100% is a clear country sky, 300% a mountain-top sky; 0% hides them. "
+                        + "(0.12.0: 100% is what 30% was before.)");
+        config.fileOnly(true);
+        starScale = config.slider("star_scale", 2, 1, 2, 1, ChangeTier.LIVE, "Star amount scale",
+                "Atmosphera 0.12.0 changed what the star amount means; 2 marks this file as converted. Leave it as it is.");
+        config.fileOnly(false);
         milkyWay = config.percent("milky_way", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Milky Way",
                 "Brightness of the faint band of the galaxy.");
         airglow = config.percent("airglow", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Airglow",
                 "The faint green and amber glow low in a dark night sky.");
 
-        config.section("events", "Sky events (0.7.0 \"Optics\", 0.8.0 \"Night\", 0.9.0 \"Omens\"): the sky's occasional sights. "
+        config.section("events", "Sky events", "Sky events (0.7.0 \"Optics\", 0.8.0 \"Night\", 0.9.0 \"Omens\"): the sky's occasional sights. "
                 + "Which days and nights have them is a hash of the in-game day, so every player on a server sees the same "
                 + "ones. /atmosphera skyeffect <name> on|off|auto shows one at will.");
         events = config.toggle("enabled", true, ChangeTier.LIVE, "Sky events",
                 "Halos and sun dogs, rainbows, light pillars, auroras, noctilucent clouds, meteors, nebulae and the blood "
                         + "moon appear now and then. Off: none of them (the command still lists them).");
+        config.headerSwitch(events);
         eventFrequency = config.percent("frequency", 1.0, 0.0, 3.0, ChangeTier.LIVE, "Sky event frequency",
                 "How often the chance events come, as a multiple of each one's own chance. 100% keeps them rare.");
-        config.fileOnly(true);
+        config.subheading("day", "Day");
         halo = config.toggle("halo", true, ChangeTier.LIVE, "Halo",
                 "A 22-degree ring round the sun, or a bright moon, on some days with cirrus.");
         sunDogs = config.toggle("sun_dogs", true, ChangeTier.LIVE, "Sun dogs",
@@ -298,11 +315,17 @@ public final class AtmospheraConfig {
                         + "horizon there.");
         lightPillarChance = config.percent("light_pillar_chance", 0.10, 0.0, 1.0, ChangeTier.LIVE, "Light pillar chance",
                 "The share of nights with light pillars in snowy biomes (0.10 = one night in ten).");
+        config.subheading("night", "Night");
         aurora = config.toggle("aurora", true, ChangeTier.LIVE, "Aurora",
                 "Curtains of green and red light in the northern night sky. Often in snowy biomes and high up, following "
                         + "an activity that rises and falls over several days; elsewhere only in the strongest storms.");
         auroraBrightness = config.percent("aurora_brightness", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Aurora brightness",
                 "Brightness of the aurora.");
+        auroraAustralis = config.toggle("aurora_australis", true, ChangeTier.LIVE, "Aurora Australis",
+                "The southern aurora: a low band of pink, red and violet light over the southern horizon. Very rare, and "
+                        + "only in icy biomes (snowy plains, frozen peaks, ice spikes) on a dark, clear night.");
+        auroraAustralisChance = config.percent("aurora_australis_chance", 0.04, 0.0, 1.0, ChangeTier.LIVE,
+                "Aurora Australis chance", "The share of dark nights in icy biomes with the southern aurora (0.04 = one in 25).");
         noctilucent = config.toggle("noctilucent", true, ChangeTier.LIVE, "Noctilucent clouds",
                 "Rippled blue-white clouds low over the horizon in deep twilight, on some evenings and mornings in "
                         + "snowy biomes.");
@@ -336,7 +359,6 @@ public final class AtmospheraConfig {
                 "Effects to show whatever the day's luck says, by the names of /atmosphera skyeffect: for example "
                         + "[\"aurora\", \"nebula:3\"] (the third nebula image), or \"-rainbow\" to keep one off. Like the command, "
                         + "but kept across sessions; the command wins while it is used.");
-        config.fileOnly(false);
         config.register();
     }
 }

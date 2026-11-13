@@ -133,6 +133,14 @@ public final class SkyPass {
                 // 0.9.0: a nebula's light on the night (Lumis tints and lifts the sky light by it).
                 return SkyPass.nebulaLight(rgb);
             }
+
+            @Override
+            public boolean sunColor(float altitude, float[] rgb) {
+                // 0.12.0: the sunlight colour at a height (blocks, mapped like the sky's camera height), for the clouds
+                // and Lumis: one sunset colour for the sky, the clouds and the light on the ground.
+                double km = SkyModel.TABLE_HEIGHT + Math.max(0.0, altitude - 63.0) / 1000.0;
+                return SkyModel.sunlight(km, SunSource.dirY(), rgb);
+            }
         });
         com.solarbiscuit.atmosphera.lib.world.SkyView.register(feature,
                 () -> skyMap != 0 && AtmosClient.frame() - skyMapFrame <= 2 ? skyMap : 0);
@@ -354,6 +362,9 @@ public final class SkyPass {
                 NEB_WANTED[k] = k < SkyEvents.nebulaCount ? SkyEvents.NEB_IMAGE[k] : -1;
             }
             NebulaImages.update(NEB_WANTED);
+            // 0.12.0: the moon's surface map (unit 9, after the loaders that use 9 as scratch).
+            MoonMap.update();
+            bind(9, pack ? 0 : MoonMap.texture());
             int shown = 0;
             java.util.Arrays.fill(NEB_U, 0f);
             float turnCos = (float) Math.cos(SkyEvents.nebulaTurn);
@@ -404,6 +415,8 @@ public final class SkyPass {
             GL20C.glUniform1i(u[22], 6);
             GL20C.glUniform1i(u[23], 7);
             GL20C.glUniform1i(u[24], 8);
+            GL20C.glUniform1i(u[29], 9);
+            GL20C.glUniform4f(u[30], pack ? 0f : MoonMap.width(), MoonMap.fade(), 0f, 0f);
             GL20C.glUniform4fv(u[25], stack.floats(NEB_U));
             GL20C.glUniform4f(u[26], turnCos, turnSin, shown, 0f);
             GL20C.glUniform4f(u[27], pack ? packDisc() : 1f, 0f, 0f, 0f);
@@ -589,7 +602,8 @@ public final class SkyPass {
         viewU = locate(skyViewProgram, "u_Transmittance", "u_MultiScatter", "u_SkyCam");
         skyU = locate(skyProgram, "u_Transmittance", "u_SkyView", "u_Noise", "u_PackSun", "u_PackMoon", "u_InvViewProj",
                 "u_SkyCam", "u_Sun", "u_Moon", "u_MoonPhase", "u_Stars", "u_Look", "u_Fog", "u_Time", "u_Look2",
-                "u_Map", "u_CloudMap", "u_Fx", "u_Dog", "u_Pillar", "u_PillarCol", "u_Meteor", "u_Nebula0", "u_Nebula1", "u_Nebula2", "u_Neb", "u_NebFrame", "u_PackDisc", "u_Twinkle");
+                "u_Map", "u_CloudMap", "u_Fx", "u_Dog", "u_Pillar", "u_PillarCol", "u_Meteor", "u_Nebula0", "u_Nebula1", "u_Nebula2", "u_Neb", "u_NebFrame", "u_PackDisc", "u_Twinkle",
+                "u_MoonMap", "u_MoonInfo");
         eventsUploaded = false;
         transmittance = lut("Atmosphera sky transmittance", TRANS_W, TRANS_H, false);
         multiScatter = lut("Atmosphera sky multiple scattering", MS_SIZE, MS_SIZE, false);
@@ -624,6 +638,7 @@ public final class SkyPass {
         transmittance = multiScatter = skyView = 0;
         releaseSkyMap();
         NebulaImages.release();
+        MoonMap.release();
         if (fbo != 0) {
             GpuResources.deleteFramebuffer(fbo);
             fbo = 0;

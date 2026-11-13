@@ -45,6 +45,19 @@ public final class AirFog {
     private static float haze = 1f;
     private static float mist = 1f;
     private static float wet;
+    /** 0.12.0: the sandstorm look of the biomes around (share of the ring with a storm profile, its colour and fog). */
+    private static float storm;
+    private static float stormR;
+    private static float stormG;
+    private static float stormB;
+    private static float stormFog = 1f;
+    private static float stormHaze = 1f;
+    private static float tS;
+    private static float tSR;
+    private static float tSG;
+    private static float tSB;
+    private static float tSF = 1f;
+    private static float tSH = 1f;
     /** The dawn mist's strength now, 0..1 (for the fogbow). */
     private static float mistNow;
     // Targets, from the last biome sampling.
@@ -101,6 +114,7 @@ public final class AirFog {
         if (--sampleCountdown <= 0) {
             sampleCountdown = 10;
             float r = 0f, g = 0f, b = 0f, t = 0f, d = 0f, h = 0f, m = 0f, w = 0f;
+            float sr = 0f, sg = 0f, sb = 0f, ss = 0f, sf = 0f, sh = 0f;
             BlockPos at = camera.getBlockPosition();
             for (int[] off : RING) {
                 POS.set(at.getX() + off[0], at.getY(), at.getZ() + off[1]);
@@ -113,6 +127,12 @@ public final class AirFog {
                 d += p.fogDistance();
                 h += p.haze();
                 m += p.mist();
+                sr += p.stormR() * p.storm();
+                sg += p.stormG() * p.storm();
+                sb += p.stormB() * p.storm();
+                ss += p.storm();
+                sf += p.storm() > 0f ? p.stormFog() : 1f;
+                sh += p.storm() > 0f ? p.stormHaze() : 1f;
                 boolean water = biome.is(BiomeTags.IS_OCEAN) || biome.is(BiomeTags.IS_RIVER)
                         || biome.is(BiomeTags.IS_BEACH) || biome.value().getBaseTemperature() < 0.95f
                         && biome.value().getModifiedClimateSettings().downfall() > 0.7f;
@@ -137,6 +157,14 @@ public final class AirFog {
             tH = h / n;
             tM = m / n;
             tWet = w / n;
+            tS = ss / n;
+            if (ss > 1e-4f) {
+                tSR = sr / ss;
+                tSG = sg / ss;
+                tSB = sb / ss;
+            }
+            tSF = sf / n;
+            tSH = sh / n;
         }
         float dt = (float) Math.min(0.25, Math.max(0.0, AtmosClock.deltaSeconds()));
         float k = 1f - (float) Math.exp(-dt / 3f);
@@ -148,6 +176,25 @@ public final class AirFog {
         haze += (tH - haze) * k;
         mist += (tM - mist) * k;
         wet += (tWet - wet) * k;
+        storm += (tS - storm) * k;
+        stormR += (tSR - stormR) * k;
+        stormG += (tSG - stormG) * k;
+        stormB += (tSB - stormB) * k;
+        stormFog += (tSF - stormFog) * k;
+        stormHaze += (tSH - stormHaze) * k;
+    }
+
+    /**
+     * 0.12.0: how much a sandstorm (a rain spell over dry sandy biomes with a storm profile) shapes the air now, 0..1,
+     * from the rain's wetness and the share of storm biomes around. The weather mod draws the blowing sand.
+     */
+    public static float sandstorm(float wetness) {
+        return Math.min(1f, storm * wetness * 1.25f);
+    }
+
+    /** 0.12.0: the distant haze's extra thickness in a sandstorm (1 = none). */
+    static float stormHazeScale(float wetness) {
+        return 1f + (stormHaze - 1f) * sandstorm(wetness);
     }
 
     private static void fogColor(ViewportEvent.ComputeFogColor event) {
@@ -169,9 +216,15 @@ public final class AirFog {
             float grey = 0.5f * CloudWeather.wetness(level.getRainLevel(partial), level.getThunderLevel(partial))
                     + 0.2f * level.getThunderLevel(partial);
             float l = 0.3f * red + 0.59f * green + 0.11f * blue;
-            red += (l - red) * grey;
-            green += (l - green) * grey;
-            blue += (l - blue) * grey;
+            // 0.12.0: in a sandstorm the fog turns the storm profile's sand colour instead of grey.
+            float sand = sandstorm(CloudWeather.wetness(level.getRainLevel(partial), level.getThunderLevel(partial)));
+            float bright = brightness(event);
+            red += (l - red) * grey * (1f - sand);
+            green += (l - green) * grey * (1f - sand);
+            blue += (l - blue) * grey * (1f - sand);
+            red += (stormR * bright - red) * sand * 0.85f;
+            green += (stormG * bright - green) * sand * 0.85f;
+            blue += (stormB * bright - blue) * sand * 0.85f;
         }
         event.setRed(red);
         event.setGreen(green);
@@ -197,8 +250,10 @@ public final class AirFog {
         float partial = (float) event.getPartialTick();
         float scale = 1f + (distance - 1f) * AtmospheraConfig.biomeFog.get().floatValue();
         if (AtmospheraConfig.weatherFog.get()) {
-            scale *= 1f - 0.35f * CloudWeather.wetness(level.getRainLevel(partial), level.getThunderLevel(partial))
-                    - 0.2f * level.getThunderLevel(partial);
+            float wetNow = CloudWeather.wetness(level.getRainLevel(partial), level.getThunderLevel(partial));
+            scale *= 1f - 0.35f * wetNow - 0.2f * level.getThunderLevel(partial);
+            // 0.12.0: a sandstorm closes the fog in to the storm profile's distance.
+            scale *= 1f + (stormFog - 1f) * sandstorm(wetNow);
         }
         if (AtmospheraConfig.morningMist.get()) {
             // Dawn mist: from just before sunrise until the sun is about 20 degrees up, low over wet ground.

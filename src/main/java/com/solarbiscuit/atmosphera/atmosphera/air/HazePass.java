@@ -69,7 +69,8 @@ public final class HazePass {
         float thunder = level.getThunderLevel(partial);
         float rain = CloudWeather.wetness(level.getRainLevel(partial), thunder);
         // Distance (beyond the start) at which half the light is lost.
-        float half = 2600f / Math.max(0.05f, amount * AirFog.hazeScale()) * (1f - 0.55f * rain - 0.15f * thunder);
+        float half = 2600f / Math.max(0.05f, amount * AirFog.hazeScale() * AirFog.stormHazeScale(rain))
+                * (1f - 0.55f * rain - 0.15f * thunder);
         int dh = AtmospheraConfig.dhDepth.get() ? DhBridge.depthTexture(frame) : 0;
         GlStateSnapshot saved = GlStateSnapshot.save();
         try (MemoryStack stack = MemoryStack.stackPush()) {

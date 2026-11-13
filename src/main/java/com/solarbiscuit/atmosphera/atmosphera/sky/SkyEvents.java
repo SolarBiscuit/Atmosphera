@@ -36,6 +36,7 @@ public final class SkyEvents {
         FOGBOW("fogbow"),
         LIGHT_PILLARS("light_pillars"),
         AURORA("aurora"),
+        AURORA_AUSTRALIS("aurora_australis"),
         NOCTILUCENT("noctilucent"),
         ZODIACAL_LIGHT("zodiacal_light"),
         METEOR_SHOWER("meteor_shower"),
@@ -245,7 +246,7 @@ public final class SkyEvents {
             case MOONBOW -> sunY < -0.1f && sunY > -0.67f ? null : "a moon lower than 42 degrees (look away from it)";
             case FOGBOW -> sunY > 0.05f && sunY < 0.6f ? null : "a low sun (look away from it)";
             case LIGHT_PILLARS -> night || Math.abs(sunY) < 0.12f ? null : "the night, or a sun at the horizon";
-            case AURORA, ZODIACAL_LIGHT, METEOR_SHOWER, NEBULA -> night ? null : "a dark night";
+            case AURORA, AURORA_AUSTRALIS, ZODIACAL_LIGHT, METEOR_SHOWER, NEBULA -> night ? null : "a dark night";
             case NOCTILUCENT -> sunY < -0.07f && sunY > -0.29f ? null : "deep twilight (the sun 6 to 16 degrees down)";
             case BLOOD_MOON -> sunY < -0.1f ? null : "the night";
             case MAMMATUS -> null;
@@ -426,6 +427,11 @@ public final class SkyEvents {
         float auroraHere = Math.max(Math.min(1f, icy + 0.4f * high) * smoothstep(quiet, quiet + 0.2f, activity),
                 0.5f * smoothstep(0.93f, 0.99f, activity));
         set(Effect.AURORA, AtmospheraConfig.aurora.get(), auroraHere * clear, dark);
+        // 0.12.0: the southern aurora, low over the southern horizon: very rare, only where it is truly icy (snowy and
+        // frozen biomes), on its own nightly chance.
+        set(Effect.AURORA_AUSTRALIS, AtmospheraConfig.auroraAustralis.get(),
+                lucky(Effect.AURORA_AUSTRALIS, day, dim, 3, AtmospheraConfig.auroraAustralisChance.get().floatValue() * frequency)
+                        ? smoothstep(0.8f, 0.97f, icy) * clear : 0f, dark);
         float dusk = smoothstep(-0.07f, -0.12f, sunY) * (1f - smoothstep(-0.24f, -0.29f, sunY));
         set(Effect.NOCTILUCENT, AtmospheraConfig.noctilucent.get(),
                 lucky(Effect.NOCTILUCENT, day, dim, tod < 18000 ? 1 : 2,
@@ -543,6 +549,8 @@ public final class SkyEvents {
         // u_Fx1: aurora, noctilucent, zodiacal light, meteor count.
         float zodiacal = strength[Effect.ZODIACAL_LIGHT.ordinal()];
         fx[4] = strength[Effect.AURORA.ordinal()] * AtmospheraConfig.auroraBrightness.get().floatValue();
+        // 0.12.0: u_Fx7.w, the southern aurora.
+        fx[31] = strength[Effect.AURORA_AUSTRALIS.ordinal()] * AtmospheraConfig.auroraBrightness.get().floatValue();
         fx[5] = strength[Effect.NOCTILUCENT.ordinal()];
         fx[6] = zodiacal;
         // u_Fx6: aurora time and seed, noctilucent upper limit (sine of the elevation; it sinks as the sun does),

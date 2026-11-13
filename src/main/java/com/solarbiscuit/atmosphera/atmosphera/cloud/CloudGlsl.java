@@ -31,6 +31,8 @@ final class CloudGlsl {
             uniform vec4 u_Block;      // x cell (0 = smooth), y layer depth, zw world position mod cell
             uniform vec4 u_LightDir;   // xyz towards the light (sun or moon)
             uniform vec4 u_LightCol;   // rgb light, w forward scattering
+            uniform vec4 u_LightColHigh; // 0.12.0: rgb the light at the altocumulus and cirrus height (sunset lasts longer up there)
+            uniform vec4 u_AmbSun;     // 0.12.0: rgb warm light from the sunlit horizon on the sides facing the sun, w golden hour
             uniform vec4 u_AmbTop;     // rgb sky light from above, w ambient strength
             uniform vec4 u_AmbBottom;  // rgb light from below, w powder
             uniform vec4 u_Haze;       // rgb haze colour, w darkening in rain
@@ -609,8 +611,16 @@ final class CloudGlsl {
                 float lod = far ? 2.0 : clamp(log2(seg.x / 500.0 + 1.0), 0.0, 2.0);
                 bool detail = u_Flags.x > 0.5 && !far;
                 float mu = dot(dir, u_LightDir.xyz);
-                float phase = mix(0.0795775, 0.8 * atmosphera_hg(mu, 0.8) + 0.2 * atmosphera_hg(mu, -0.25), u_LightCol.w);
-                float phaseMulti = atmosphera_hg(mu, 0.3);
+                // 0.12.0: a wider, lower forward lobe, capped at 6x the even scattering (it was about 27x at the sun, so
+                // thin cloud over the sun burned to white), and less of the sun's light added right where the sky has
+                // already drawn the sun and its glow behind the cloud.
+                float phase = min(mix(0.0795775, 0.6 * atmosphera_hg(mu, 0.7) + 0.25 * atmosphera_hg(mu, 0.3)
+                        + 0.15 * atmosphera_hg(mu, -0.25), u_LightCol.w), 0.4775);
+                float headroom = 1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu);
+                float sunSide = 0.4 + 0.6 * max(mu, 0.0);
+                // 0.12.0: multiple scattering is half even (it was all forward, so looking up at a high sun the whole
+                // deck glowed).
+                float phaseMulti = mix(0.0795775, atmosphera_hg(mu, 0.3), 0.5);
                 // 0.2.0 (u_March.z): a third, softer scattering octave lifts deep cumulus cores (hoisted per ray).
                 float phase3 = u_March.z > 0.5 ? atmosphera_hg(mu, 0.1) : 0.0;
                 vec3 light = vec3(0.0);
@@ -656,13 +666,15 @@ final class CloudGlsl {
                             fill = mix(0.35, 1.5, smoothstep(0.05, 0.8, pouch.y)) * mix(0.75, 1.15, pouch.z);
                         }
                         float multi = exp(-od * 0.25) * 0.5;
-                        float powder = mix(1.0, 1.0 - exp(-od * 2.0 - sigma * 30.0), u_AmbBottom.w * (0.5 - 0.5 * mu));
+                        // 0.12.0: powder keeps a third of its darkening towards the sun (it switched off there).
+                        float powder = mix(1.0, 1.0 - exp(-od * 2.0 - sigma * 30.0), u_AmbBottom.w * max(0.5 - 0.5 * mu, 0.35));
                         // Rain and storms darken the lower part of the deck (0.1.1: an albedo term, no longer a dimmer on
                         // the whole picture, which made rain clouds vanish into the sky).
                         float albedo = mix(1.0 - u_Haze.w, 1.0, clamp(h * 1.4, 0.0, 1.0));
                         float third = u_March.z > 0.5 ? exp(-od * 0.0625) * 0.25 * phase3 : 0.0;
-                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti + third) * powder * 12.566 * shade
-                                + atmosphera_ambient(h) * mix(0.55, 1.0, max(h, 0.0)) * mix(1.0, shade, 0.5) * fill) * albedo;
+                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti + third) * powder * 12.566 * shade * headroom
+                                + atmosphera_ambient(h) * mix(0.55, 1.0, max(h, 0.0)) * mix(1.0, shade, 0.5) * fill
+                                + u_AmbSun.rgb * sunSide * (1.0 - 0.6 * clamp(h, 0.0, 1.0))) * albedo;
                         if (u_Flash.w > 0.0) {
                             // 0.5.0: lightning lights the cell from within (falls off over a few hundred blocks).
                             vec3 dv = p - u_Flash.xyz;
@@ -732,6 +744,7 @@ final class CloudGlsl {
                 // The forward glow is capped: small bright clumps near the sun read as glitter (0.1.3).
                 float phase = min(mix(0.0795775, 0.75 * atmosphera_hg(mu, 0.55) + 0.25 * atmosphera_hg(mu, -0.2), u_LightCol.w), 0.25);
                 float phaseMulti = atmosphera_hg(mu, 0.3);
+                float headroom = 1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu);
                 float albedo = 1.0 - 0.6 * u_Haze.w;
                 vec3 light = vec3(0.0);
                 float trans = 1.0;
@@ -754,7 +767,7 @@ final class CloudGlsl {
                         float powder = mix(1.0, 1.0 - exp(-od * 2.0 - sigma * 30.0), u_AmbBottom.w * (0.5 - 0.5 * mu));
                         vec3 below = mix(u_AmbBottom.rgb, u_AmbTop.rgb, 0.45);
                         // 0.8.4: less sun (the cloudlets read pure white) and shaded bases.
-                        vec3 s = (u_LightCol.rgb * (beer * phase + multi * phaseMulti) * powder * 12.566 * 0.55
+                        vec3 s = (u_LightColHigh.rgb * (beer * phase + multi * phaseMulti) * powder * 12.566 * 0.55 * headroom
                                 * mix(0.45, 1.0, hf)
                                 + mix(below, u_AmbTop.rgb, hf) * u_AmbTop.w * mix(0.75, 1.0, hf)) * albedo;
                         float tr = exp(-sigma * dt);
@@ -819,13 +832,18 @@ final class CloudGlsl {
                 if (cirrus) {
                     // Thin ice: bright, a strong forward lobe near the sun, the sun's own colour at dusk and dawn;
                     // not darkened by the rain below.
-                    float phase = mix(0.0795775, 0.7 * atmosphera_hg(mu, 0.85) + 0.3 * atmosphera_hg(mu, 0.2), u_LightCol.w);
-                    s = u_LightCol.rgb * phase * 12.566 * 0.95 + u_AmbTop.rgb * u_AmbTop.w * 1.05;
+                    // 0.12.0: the lobe capped at 4x the even scattering (it was about 41x at the sun), dimmed by its own
+                    // depth, less where the sky has drawn the sun behind it; lit by the high clouds' light colour.
+                    float phase = min(mix(0.0795775, 0.7 * atmosphera_hg(mu, 0.85) + 0.3 * atmosphera_hg(mu, 0.2), u_LightCol.w), 0.318);
+                    float headroom = 1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu);
+                    s = u_LightColHigh.rgb * phase * 12.566 * 0.95 * exp(-tau * 0.3) * headroom
+                            + u_AmbTop.rgb * u_AmbTop.w * 1.05 + u_AmbSun.rgb * 0.6 * (0.4 + 0.6 * max(mu, 0.0));
                 } else {
                     // Softer forward glow than cirrus, capped: small bright clumps near the sun read as glitter (0.1.3).
                     float phase = min(mix(0.0795775, 0.75 * atmosphera_hg(mu, 0.55) + 0.25 * atmosphera_hg(mu, -0.2), u_LightCol.w), 0.25);
                     float albedo = (1.0 - 0.6 * u_Haze.w) * altoAlbedo;
-                    s = (u_LightCol.rgb * phase * 12.566 * 0.85 * exp(-tau * 0.4) * shade
+                    s = (u_LightColHigh.rgb * phase * 12.566 * 0.85 * exp(-tau * 0.4) * shade
+                            * (1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu))
                             + u_AmbTop.rgb * u_AmbTop.w * 0.9) * albedo;
                 }
                 return vec4(s * alpha, 1.0 - alpha);
@@ -1076,9 +1094,15 @@ final class CloudGlsl {
                         + g1.y * (g0.x * textureLod(tex, vec2(h0.x, h1.y), 0.0) + g1.x * textureLod(tex, h1, 0.0));
             }
 
+            // 0.12.0: the roll-off works on brightness and keeps the hue, from 0.6 up to at most 0.95: a bright deck keeps its
+            // shading instead of every channel flattening to pure white (an overcast sky at noon read as a white sheet).
             vec3 atmosphera_shoulder(vec3 c) {
-                vec3 over = max(c - 0.8, 0.0);
-                return min(c, vec3(0.8)) + 0.2 * (1.0 - exp(-over / 0.2));
+                float l = max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-5);
+                if (l <= 0.6) {
+                    return c;
+                }
+                float rolled = 0.6 + 0.35 * (1.0 - exp(-(l - 0.6) / 0.35));
+                return min(c * (rolled / l), vec3(1.0));
             }
 
             void main() {
