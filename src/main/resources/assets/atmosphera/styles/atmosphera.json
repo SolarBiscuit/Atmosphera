@@ -1,0 +1,16 @@
+{
+    "_comment": "Atmosphera (default): realistic cumulus fields. Sizes in blocks. See CloudStyle.java for every key; keys left out keep the built-in values.",
+    "coverage": 1.0,
+    "extinction": 0.055,
+    "softness": 0.14,
+    "detail": 0.35,
+    "shape_size": 360,
+    "detail_size": 72,
+    "weather_size": 6144,
+    "forward": 0.75,
+    "ambient": 0.85,
+    "powder": 0.6,
+    "rain_darken": 0.55,
+    "block_cell": 0,
+    "block_depth": 0
+}

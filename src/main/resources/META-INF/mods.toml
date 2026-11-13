@@ -6,7 +6,7 @@ license = "${mod_license}"
  modId = "${mod_id}"
  version = "${mod_version}"
  displayName = "${mod_name}"
- logoFile = "stratos.png"
+ logoFile = "atmosphera.png"
  authors = "${mod_authors}"
  credits = "Made by SolarBiscuit. All Rights Reserved; unmodified jars may be included in modpacks with credit (see LICENSE)."
  description = '''${mod_description}'''
@@ -27,7 +27,7 @@ license = "${mod_license}"
   ordering = "NONE"
   side = "CLIENT"
 
-# Post passes, frame uniforms, the cloud cover service, wind, the DH and Voxy bridges. Constructed first so Stratos can
+# Post passes, frame uniforms, the cloud cover service, wind, the DH and Voxy bridges. Constructed first so Atmosphera can
 # register.
 [[dependencies.${mod_id}]]
   modId = "atmospheralib"

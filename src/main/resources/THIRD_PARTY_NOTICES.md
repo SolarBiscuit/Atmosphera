@@ -1,12 +1,12 @@
-# Third-party material in Stratos
+# Third-party material in Atmosphera
 
-## Nebula images (`assets/stratos/textures/nebula/`)
+## Nebula images (`assets/atmosphera/textures/nebula/`)
 
-The nebulae in Stratos's night sky are real telescope images from ESA/Hubble and ESA/Webb, used under the
+The nebulae in Atmosphera's night sky are real telescope images from ESA/Hubble and ESA/Webb, used under the
 [Creative Commons Attribution 4.0 International licence](https://creativecommons.org/licenses/by/4.0/) (CC BY 4.0).
-They are not covered by Stratos's own licence. ESA, NASA, CSA and STScI do not endorse Stratos.
+They are not covered by Atmosphera's own licence. ESA, NASA, CSA and STScI do not endorse Atmosphera.
 
-Changes made for Stratos: each image was re-saved as a JPEG (quality 95) with its darkest 1.5% set to black (a black-point
+Changes made for Atmosphera: each image was re-saved as a JPEG (quality 95) with its darkest 1.5% set to black (a black-point
 change, so the sky shows through); in the game it is drawn on the night sky, turned, with its edges faded.
 
 | File | Image | Credit | Source |

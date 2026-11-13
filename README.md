@@ -1,14 +1,16 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/SolarBiscuit/Atmosphera/main/docs/logo/stratos-icon.svg" width="160" alt="Stratos">
+  <img src="https://raw.githubusercontent.com/SolarBiscuit/Atmosphera/main/docs/logo/atmosphera-icon.svg" width="160" alt="Atmosphera">
 </p>
 
-# Stratos
+# Atmosphera
+
+Named Stratos until 2026-11-12 (0.10.0 and older).
 
 Clouds, sky and air for the [Atmosphera](https://github.com/SolarBiscuit/Atmosphera) suite on Minecraft Forge 1.20.1:
 weather-driven, volumetric clouds that look like a shaderpack's, at about the cost of vanilla's, **without a
 shaderpack**. Later releases add the rest of the sky (see the roadmap).
 
-**Current version: 0.9.0** (needs AtmospheraLib 0.9.1 or newer).
+**Current version: 0.11.0** (needs AtmospheraLib 0.9.1 or newer).
 
 > **Client-only.** Never required on a server, never blocks joining one. Off while a shaderpack is active (packs draw
 > their own clouds) and under Fabulous graphics.
@@ -22,14 +24,14 @@ shaderpack**. Later releases add the rest of the sky (see the roadmap).
   with distance, and a curved layer that sinks to the horizon.
 - **Distant terrain.** NeoVoxy and Voxy LODs hide the clouds behind them; Distant Horizons too (not yet tested in
   game).
-- **Works with Lumis.** Lumis draws no clear-sky light rays or lens flare through Stratos's clouds.
-- **Styles:** STRATOS (realistic, default), SOFT, BLOCKY (vanilla-like cells). Resource packs can replace them
-  (`assets/stratos/styles/*.json`).
+- **Works with Lumis.** Lumis draws no clear-sky light rays or lens flare through Atmosphera's clouds.
+- **Styles:** ATMOSPHERA (realistic, default), SOFT, BLOCKY (vanilla-like cells). Resource packs can replace them
+  (`assets/atmosphera/styles/*.json`).
 
 ## Added in 0.4.0 to 0.6.0
 Released together as 0.6.0; 0.6.1 fixes an AMD driver crash and 0.6.2-0.6.3 have the audit fixes. Every feature has its own
 switch and is on by default.
-- **Mirror:** clouds and the sky in water. Stratos keeps a small map of the whole sky (128x64) and Torrente's water
+- **Mirror:** clouds and the sky in water. Atmosphera keeps a small map of the whole sky (128x64) and Torrente's water
   reflects it (sunsets, twilight, clouds).
 - **Storm:**
   - anvils, mammatus pouches and shelf clouds on thunder storms;
@@ -37,14 +39,14 @@ switch and is on by default.
   - lightning inside the clouds, the same flashes for every player on a server;
   - regional clouds: fewer over deserts, flatter over snow, gathered on windward slopes and clear on lee sides.
 - **Air:**
-  - biome fog colour and distance from data files in `assets/stratos/air` (resource packs can replace them);
+  - biome fog colour and distance from data files in `assets/atmosphera/air` (resource packs can replace them);
   - weather fog, and mist at dawn over water and wet ground;
   - a distant haze over terrain and LODs;
   - it defers to Atmospherics while that is installed.
 - **Stars:** a "Star amount" option (0-300%) beside "Star brightness".
 - **Reload in game:** `/atmosphera reload` re-reads the settings; `/atmosphera reload shaders` (and the "Reload
-  Atmosphera" key) also rebuilds Stratos's shaders.
-- **Option sections** in `stratos-client.toml`: "storm" (storm clouds, rain shafts, lightning, regional clouds) and
+  Atmosphera" key) also rebuilds Atmosphera's shaders.
+- **Option sections** in `atmosphera-client.toml`: "storm" (storm clouds, rain shafts, lightning, regional clouds) and
   "air" (biome fog, haze, weather fog, dawn mist).
 
 ## Nebulae (0.9.0)
@@ -53,7 +55,13 @@ switch and is on by default.
 - **They light the night.** A glow in the sky round the nebula, a reflection in water and, with Lumis, a tint and lift
   of the night's sky light, strongest at new moon.
 - **Resource packs** can add images in `assets/<namespace>/textures/nebula/` (JPEG or PNG).
-- **Command:** `/stratos skyeffect nebula on <n>` shows image n.
+- **High, nearly still, up to three (0.10.0).**
+  - They stand high in the sky: 35 to 80 degrees up at midnight, faded in above 25 degrees.
+  - They stay nearly still against the land through the night (their frame turns at a tenth of the stars' rate).
+  - Up to three can show on one night: a second on about 30% of nebula nights, a third on 10%. The option "Nebula
+    count" sets the most.
+- **Stars (0.10.0):** the options "Star twinkle" and "Twinkle speed" set how much and how fast stars twinkle.
+- **Command:** `/atmosphera skyeffect nebula on <n> [count]` shows image n, and count nebulae.
 - **Credits:** see `THIRD_PARTY_NOTICES.md` (in the jar, and in `src/main/resources/`).
 
 ## Cost
@@ -69,28 +77,28 @@ These are targets; they are **not yet measured**. Only AMD hardware has been tes
 
 ## Install
 1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.9.1 or newer.
-2. Put the Stratos jar in `mods/`.
-3. Options are on the "Stratos (clouds)" page in Video Settings (with Xenon or Embeddium), and in
-   `config/Atmosphera/stratos-client.toml`.
+2. Put the Atmosphera jar in `mods/`.
+3. Options are on the "Atmosphera (clouds)" page in Video Settings (with Xenon or Embeddium), and in
+   `config/Atmosphera/atmosphera-client.toml`.
 
 ## Roadmap
 | Release | Theme |
 |---|---|
 | 0.1.0 "Deck" | Clouds |
 | 0.2.0 "Shade" | Cloud shadows on the ground and light beams through cloud breaks (with Lumis) (built) |
-| 0.3.0 "Firmament" | Stratos's own sky: scattering, sun and moon, stars, twilight (built) |
+| 0.3.0 "Firmament" | Atmosphera's own sky: scattering, sun and moon, stars, twilight (built) |
 | 0.4.0 "Mirror" | Clouds in Torrente's water reflections (built) |
 | 0.5.0 "Storm" | Anvils, rain shafts, lightning inside clouds, clouds on mountains (built) |
 | 0.6.0 "Air" | Biome fog and haze (built; 0.4.0 to 0.6.0 released together as 0.6.x, current 0.6.3) |
 | 0.7.0 "Optics" | Halos, sun dogs, rainbows, the green flash |
 | 0.8.0 "Night" | Aurora, noctilucent clouds, meteors |
 
-Details: `docs/roadmap/STRATOS-ROADMAP.md` and `docs/STRATOS-DESIGN.md` in the Atmosphera repository.
+Details: `docs/roadmap/ATMOSPHERA-MOD-ROADMAP.md` and `docs/ATMOSPHERA-MOD-DESIGN.md` in the Atmosphera repository.
 
 ## Licence
 **All Rights Reserved.** Copyright (C) 2026 SolarBiscuit. The source is public so it can be read. Unmodified jars may be
-included in modpacks with credit; everything else needs permission. See [`LICENSE`](LICENSE). Stratos needs
+included in modpacks with credit; everything else needs permission. See [`LICENSE`](LICENSE). The Atmosphera sky mod needs
 AtmospheraLib, which is a separate GPL-3.0 work.
 
-Stratos is an independent project, not affiliated with Mojang Studios, Microsoft, Minecraft Forge, or the authors of any
+The Atmosphera sky mod is an independent project, not affiliated with Mojang Studios, Microsoft, Minecraft Forge, or the authors of any
 mod, resource pack or shaderpack it works with.

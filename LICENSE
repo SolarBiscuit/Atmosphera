@@ -1,16 +1,16 @@
-Stratos (Atmosphera suite)
+Atmosphera (Atmosphera suite)
 Copyright (C) 2026 SolarBiscuit. All Rights Reserved.
 
-The source code of Stratos is published so that it can be read. Publishing it does not
+The source code of Atmosphera is published so that it can be read. Publishing it does not
 license it: no right to copy, modify, fork, redistribute or reuse the code, the shaders
 or any other part of this project is granted, except as stated below.
 
-1. Modpacks. You may include unmodified release jars of Stratos in modpacks, including
+1. Modpacks. You may include unmodified release jars of Atmosphera in modpacks, including
    modpacks distributed for free or through modpack platforms (for example CurseForge
-   and Modrinth), as long as the modpack credits "Stratos by SolarBiscuit" and does not
+   and Modrinth), as long as the modpack credits "Atmosphera by SolarBiscuit" and does not
    present the mod as its own work.
 
-2. Personal use. You may download, install and use unmodified release jars of Stratos.
+2. Personal use. You may download, install and use unmodified release jars of Atmosphera.
    You may build the source for your own personal, private use; you may not distribute
    what you build.
 
@@ -18,7 +18,7 @@ or any other part of this project is granted, except as stated below.
    modified versions, and copying code or shaders into other projects, requires prior
    written permission from SolarBiscuit.
 
-Stratos depends on AtmospheraLib, which is a separate work licensed under the GNU
+Atmosphera depends on AtmospheraLib, which is a separate work licensed under the GNU
 General Public License, version 3 (see the AtmospheraLib repository). Nothing in this
 file changes AtmospheraLib's licence.
 
@@ -27,6 +27,6 @@ INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PA
 PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM,
 DAMAGES OR OTHER LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
 
-Stratos is an independent project. It is not affiliated with, endorsed by, or supported
+Atmosphera is an independent project. It is not affiliated with, endorsed by, or supported
 by Mojang Studios, Microsoft, Minecraft Forge, or the authors of any mod, resource pack
 or shaderpack it works with.

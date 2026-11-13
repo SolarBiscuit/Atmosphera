@@ -12,6 +12,10 @@ base {
     archivesName = mod_id
 }
 
+// 'Atmosphera' sorts before 'AtmospheraLib', so Gradle would configure this project first; the run config below
+// reads the lib's source sets.
+evaluationDependsOn(':AtmospheraLib')
+
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
 
 minecraft {
