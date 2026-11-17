@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/electric_blue.jpg",
+  "width": 4096,
+  "height": 1857,
+  "fov": 90,
+  "tint": [
+    0.0,
+    0.0939,
+    0.2777
+  ],
+  "exposure": 0.9975,
+  "milky_way": false,
+  "weight": 0.8,
+  "source": "joshua-woroniecki-0289jpHHk0o-unsplash.jpg"
+}

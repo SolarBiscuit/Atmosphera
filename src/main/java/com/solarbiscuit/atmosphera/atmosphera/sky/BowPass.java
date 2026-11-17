@@ -33,9 +33,10 @@ import org.lwjgl.system.MemoryStack;
  * mist. Each fades where the scene behind is near, for want of drops in front of it.
  */
 public final class BowPass {
-    private static int program;
-    private static int[] u;
-    private static boolean failed;
+    /** 0.14.2: the shared post-program holder (AtmospheraLib 0.11.0). */
+    private static final com.solarbiscuit.atmosphera.lib.gpu.PostProgram PROGRAM = new com.solarbiscuit.atmosphera.lib.gpu.PostProgram(Atmosphera.LOGGER, "Atmosphera bows", "Atmosphera rainbows",
+            () -> GlslPrograms.FULLSCREEN_VERTEX, () -> GlslPrograms.header() + BowPass.BOWS,
+            "u_Depth", "u_InvViewProj", "u_Bow", "u_Bow2");
 
     private BowPass() {
     }
@@ -47,7 +48,7 @@ public final class BowPass {
     private static void render(PostPasses.Context ctx) {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
-        if (level == null || failed || Minecraft.useShaderTransparency()
+        if (level == null || PROGRAM.failed() || Minecraft.useShaderTransparency()
                 || level.effects().skyType() != DimensionSpecialEffects.SkyType.NORMAL
                 || mc.gameRenderer.getMainCamera().getFluidInCamera() != FogType.NONE) {
             return;
@@ -60,7 +61,7 @@ public final class BowPass {
             return;
         }
         RenderTargets.Scene scene = RenderTargets.scene();
-        if (!scene.usable() || program == 0 && !compile()) {
+        if (!scene.usable() || !PROGRAM.ready()) {
             return;
         }
         // A bow needs its light to reach the drops: under a closed deck there is none. A forced bow ignores that.
@@ -77,13 +78,13 @@ public final class BowPass {
             }
             GL13C.glActiveTexture(GL13C.GL_TEXTURE12);
             GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, scene.depthTexture());
-            GL20C.glUseProgram(program);
-            GL20C.glUniform1i(u[0], 12);
-            GL20C.glUniformMatrix4fv(u[1], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+            GL20C.glUseProgram(PROGRAM.id());
+            GL20C.glUniform1i(PROGRAM.u(0), 12);
+            GL20C.glUniformMatrix4fv(PROGRAM.u(1), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
             // The bow's axis points away from its light: from the sun by day, from the moon (opposite the sun) by night.
-            GL20C.glUniform4f(u[2], SunSource.dirX() * sign, SunSource.dirY() * sign, SunSource.dirZ() * sign,
+            GL20C.glUniform4f(PROGRAM.u(2), SunSource.dirX() * sign, SunSource.dirY() * sign, SunSource.dirZ() * sign,
                     (byMoon ? moonbow * 0.4f : rainbow) * lit);
-            GL20C.glUniform4f(u[3], byMoon ? 0.25f : 1f, fogbow * (1f - 0.85f * cover), 0f, 0f);
+            GL20C.glUniform4f(PROGRAM.u(3), byMoon ? 0.25f : 1f, fogbow * (1f - 0.85f * cover), 0f, 0f);
             GL11C.glDisable(GL11C.GL_DEPTH_TEST);
             GL11C.glDepthMask(false);
             GL11C.glEnable(GL11C.GL_BLEND);
@@ -100,28 +101,9 @@ public final class BowPass {
         }
     }
 
-    private static boolean compile() {
-        program = GlslPrograms.compile("Atmosphera bows", GlslPrograms.FULLSCREEN_VERTEX, GlslPrograms.header() + BOWS);
-        if (program == 0) {
-            failed = true;
-            Atmosphera.LOGGER.error("[Atmosphera] Atmosphera rainbows are off: their program did not compile (see above)");
-            return false;
-        }
-        String[] names = {"u_Depth", "u_InvViewProj", "u_Bow", "u_Bow2"};
-        u = new int[names.length];
-        for (int i = 0; i < names.length; i++) {
-            u[i] = GL20C.glGetUniformLocation(program, names[i]);
-        }
-        return true;
-    }
-
     /** Frees the program (the lib's shader reload); the next bow rebuilds it. */
     public static void release() {
-        if (program != 0) {
-            GpuResources.deleteProgram(program);
-            program = 0;
-        }
-        failed = false;
+        PROGRAM.release();
     }
 
     static final String BOWS = """

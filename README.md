@@ -10,7 +10,7 @@ Clouds, sky and air for the [Atmosphera](https://github.com/SolarBiscuit/Atmosph
 weather-driven, volumetric clouds that look like a shaderpack's, at about the cost of vanilla's, **without a
 shaderpack**. Later releases add the rest of the sky (see the roadmap).
 
-**Current version: 0.12.0** (needs AtmospheraLib 0.10.1 or newer).
+**Current version: 0.15.1** (needs AtmospheraLib 0.11.0 or newer).
 
 > **Client-only.** Never required on a server, never blocks joining one. Off while a shaderpack is active (packs draw
 > their own clouds) and under Fabulous graphics.
@@ -86,7 +86,7 @@ One post pass at a fraction of the screen's resolution, smoothed over frames.
 These are targets; they are **not yet measured**. Only AMD hardware has been tested.
 
 ## Install
-1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.10.1 or newer.
+1. Forge 1.20.1 (47.x) and [AtmospheraLib](https://github.com/SolarBiscuit/AtmospheraLib) 0.11.0 or newer.
 2. Put the Atmosphera jar in `mods/`.
 3. Options are on the "Atmosphera (clouds)" page in Video Settings (with Xenon or Embeddium), and in
    `config/Atmosphera/atmosphera-client.toml`.

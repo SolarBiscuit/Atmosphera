@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/arch.jpg",
+  "width": 4096,
+  "height": 2046,
+  "fov": 110,
+  "tint": [
+    0.058,
+    0.1413,
+    0.2211
+  ],
+  "exposure": 0.9241,
+  "milky_way": true,
+  "weight": 1.0,
+  "source": "nathan-anderson-L95xDkSSuWw-unsplash.jpg"
+}

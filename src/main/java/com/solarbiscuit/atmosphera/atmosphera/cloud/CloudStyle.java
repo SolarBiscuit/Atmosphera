@@ -47,39 +47,31 @@ public record CloudStyle(float coverage, float extinction, float softness, float
     }
 
     static CloudStyle fromJson(JsonObject json, CloudStyle base) {
+        // 0.15.1: every value finite and in a range the shader can take (a NaN, Infinity, a zero softness or a negative
+        // extinction from a pack went straight into the uniforms). The shipped styles are well inside these.
         return new CloudStyle(
-                f(json, "coverage", base.coverage), f(json, "extinction", base.extinction),
-                f(json, "softness", base.softness), f(json, "detail", base.detail),
-                Math.max(16f, f(json, "shape_size", base.shapeSize)), Math.max(8f, f(json, "detail_size", base.detailSize)),
-                Math.max(256f, f(json, "weather_size", base.weatherSize)), f(json, "forward", base.forward),
-                f(json, "ambient", base.ambient), f(json, "powder", base.powder), f(json, "rain_darken", base.rainDarken),
-                Math.max(0f, f(json, "block_cell", base.blockCell)), Math.max(0f, f(json, "block_depth", base.blockDepth)));
+                f(json, "coverage", base.coverage, 0f, 2f), f(json, "extinction", base.extinction, 0.001f, 1f),
+                f(json, "softness", base.softness, 0.005f, 1f), f(json, "detail", base.detail, 0f, 2f),
+                f(json, "shape_size", base.shapeSize, 16f, 1e5f), f(json, "detail_size", base.detailSize, 8f, 1e5f),
+                f(json, "weather_size", base.weatherSize, 256f, 1e6f), f(json, "forward", base.forward, 0f, 1f),
+                f(json, "ambient", base.ambient, 0f, 4f), f(json, "powder", base.powder, 0f, 2f),
+                f(json, "rain_darken", base.rainDarken, 0f, 1f),
+                f(json, "block_cell", base.blockCell, 0f, 256f), f(json, "block_depth", base.blockDepth, 0f, 256f));
     }
 
-    private static float f(JsonObject json, String key, float fallback) {
-        return json.has(key) ? json.get(key).getAsFloat() : fallback;
+    private static float f(JsonObject json, String key, float fallback, float min, float max) {
+        float v = com.solarbiscuit.atmosphera.lib.util.JsonPresets.f(json, key, fallback);
+        return Float.isFinite(v) ? Math.max(min, Math.min(max, v)) : fallback;
     }
 
     /** Reads the presets at every resource reload; a resource pack replaces one by shipping the same path. */
     public static final class Loader extends SimplePreparableReloadListener<Map<AtmospheraConfig.Style, CloudStyle>> {
         @Override
         protected Map<AtmospheraConfig.Style, CloudStyle> prepare(ResourceManager manager, ProfilerFiller profiler) {
-            Map<AtmospheraConfig.Style, CloudStyle> loaded = new EnumMap<>(AtmospheraConfig.Style.class);
-            for (AtmospheraConfig.Style style : AtmospheraConfig.Style.values()) {
-                ResourceLocation id = new ResourceLocation(Atmosphera.MOD_ID,
-                        "styles/" + style.name().toLowerCase(Locale.ROOT) + ".json");
-                Optional<Resource> resource = manager.getResource(id);
-                if (resource.isEmpty()) {
-                    Atmosphera.LOGGER.warn("Cloud style {} is missing; using the fallback style.", id);
-                    continue;
-                }
-                try (Reader reader = resource.get().openAsReader()) {
-                    loaded.put(style, fromJson(com.google.gson.JsonParser.parseReader(reader).getAsJsonObject(), FALLBACK));
-                } catch (Exception e) {
-                    Atmosphera.LOGGER.warn("Cloud style {} could not be read ({}); using the fallback style.", id, e.toString());
-                }
-            }
-            return loaded;
+            // 0.14.2: AtmospheraLib's preset loader (0.11.0).
+            return com.solarbiscuit.atmosphera.lib.util.JsonPresets.load(manager, Atmosphera.MOD_ID, "styles",
+                    AtmospheraConfig.Style.class, style -> true, json -> fromJson(json, FALLBACK), Atmosphera.LOGGER,
+                    "Cloud style");
         }
 
         @Override

@@ -1,5 +1,8 @@
 package com.solarbiscuit.atmosphera.atmosphera.cloud;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.lerp;
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.clamp01;
+
 import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
 import com.solarbiscuit.atmosphera.lib.gpu.Uploads;
 import com.solarbiscuit.atmosphera.atmosphera.Atmosphera;
@@ -94,11 +97,25 @@ public final class CloudNoise {
 
     // ---------------------------------------------------------------- generation (background thread)
 
+    /**
+     * 0.14.1: runs a loop over {@code n} rows on this generation's own pool. The loops ran as parallel streams on the
+     * JVM's shared ForkJoin pool, which other mods' parallel streams and async work use too: a 1-2 s generation could
+     * stall them, and theirs could stall the clouds.
+     */
+    private static void parallelFor(java.util.concurrent.ForkJoinPool pool, int n, java.util.function.IntConsumer row) {
+        // A parallel stream started inside a pool's task runs on that pool.
+        pool.submit(() -> IntStream.range(0, n).parallel().forEach(row)).join();
+    }
+
     private static void generate() {
         long start = System.nanoTime();
+        // 0.14.1: the buffers made so far, freed if generation fails (they leaked before).
+        ByteBuffer[] owned = new ByteBuffer[4];
+        java.util.concurrent.ForkJoinPool pool = new java.util.concurrent.ForkJoinPool(
+                Math.max(1, Runtime.getRuntime().availableProcessors() - 2));
         try {
-            ByteBuffer shape = MemoryUtil.memAlloc(SHAPE * SHAPE * SHAPE * 4);
-            IntStream.range(0, SHAPE).parallel().forEach(z -> {
+            ByteBuffer shape = owned[0] = MemoryUtil.memAlloc(SHAPE * SHAPE * SHAPE * 4);
+            parallelFor(pool, SHAPE, z -> {
                 for (int y = 0; y < SHAPE; y++) {
                     for (int x = 0; x < SHAPE; x++) {
                         float u = (x + 0.5f) / SHAPE;
@@ -115,8 +132,8 @@ public final class CloudNoise {
                     }
                 }
             });
-            ByteBuffer detail = MemoryUtil.memAlloc(DETAIL * DETAIL * DETAIL);
-            IntStream.range(0, DETAIL).parallel().forEach(z -> {
+            ByteBuffer detail = owned[1] = MemoryUtil.memAlloc(DETAIL * DETAIL * DETAIL);
+            parallelFor(pool, DETAIL, z -> {
                 for (int y = 0; y < DETAIL; y++) {
                     for (int x = 0; x < DETAIL; x++) {
                         float u = (x + 0.5f) / DETAIL;
@@ -126,8 +143,8 @@ public final class CloudNoise {
                     }
                 }
             });
-            ByteBuffer weather = MemoryUtil.memAlloc(WEATHER * WEATHER * 4);
-            IntStream.range(0, WEATHER).parallel().forEach(y -> {
+            ByteBuffer weather = owned[2] = MemoryUtil.memAlloc(WEATHER * WEATHER * 4);
+            parallelFor(pool, WEATHER, y -> {
                 for (int x = 0; x < WEATHER; x++) {
                     float u = (x + 0.5f) / WEATHER;
                     float v = (y + 0.5f) / WEATHER;
@@ -138,13 +155,15 @@ public final class CloudNoise {
                     int i = (y * WEATHER + x) * 4;
                     weather.put(i, toByte(cov));
                     weather.put(i + 1, toByte(type));
-                    // B: coverage again; its mips hold the maximum, not the average (0.2.0 empty-space skip).
-                    weather.put(i + 2, toByte(cov));
-                    weather.put(i + 3, (byte) 0);
+                    // 0.13.0 "Cloud life": B, A: each cloud-sized cell's life phase as a unit vector (cos, sin), blended
+                    // across cell borders (where it weakens, the shader keeps the cloud neutral). Was coverage again.
+                    float[] life = lifePhase(u, v);
+                    weather.put(i + 2, toByte(0.5f + 0.5f * life[0]));
+                    weather.put(i + 3, toByte(0.5f + 0.5f * life[1]));
                 }
             });
-            ByteBuffer layers = MemoryUtil.memAlloc(LAYERS * LAYERS * 4);
-            IntStream.range(0, LAYERS).parallel().forEach(y -> {
+            ByteBuffer layers = owned[3] = MemoryUtil.memAlloc(LAYERS * LAYERS * 4);
+            parallelFor(pool, LAYERS, y -> {
                 for (int x = 0; x < LAYERS; x++) {
                     float u = (x + 0.5f) / LAYERS;
                     float v = (y + 0.5f) / LAYERS;
@@ -172,6 +191,15 @@ public final class CloudNoise {
             Atmosphera.LOGGER.info("Cloud noise generated in {} ms", (System.nanoTime() - start) / 1_000_000);
         } catch (Throwable t) {
             Atmosphera.LOGGER.error("Cloud noise generation failed; clouds stay off", t);
+            if (shapeData == null) {
+                for (ByteBuffer buffer : owned) {
+                    if (buffer != null) {
+                        MemoryUtil.memFree(buffer);
+                    }
+                }
+            }
+        } finally {
+            pool.shutdown();
         }
     }
 
@@ -215,8 +243,8 @@ public final class CloudNoise {
     }
 
     /**
-     * The weather map's mip chain, built here instead of by the driver (0.2.0): R, G and A are averaged as usual, B
-     * holds the maximum of its four children, so a coarse texel says whether any cloud can form inside its area.
+     * The weather map's mip chain, built here instead of by the driver (0.2.0); every channel averaged (0.13.0: B held
+     * the maximum of its four children for an empty-space skip that no shader reads; B and A hold the life phase now).
      */
     private static void uploadWeatherMips(ByteBuffer level0) {
         ByteBuffer previous = level0;
@@ -236,7 +264,7 @@ public final class CloudNoise {
                         int vb = previous.get(b + ch) & 0xFF;
                         int vc = previous.get(c + ch) & 0xFF;
                         int vd = previous.get(d + ch) & 0xFF;
-                        int v = ch == 2 ? Math.max(Math.max(va, vb), Math.max(vc, vd)) : (va + vb + vc + vd + 2) / 4;
+                        int v = (va + vb + vc + vd + 2) / 4;
                         next.put(o + ch, (byte) v);
                     }
                 }
@@ -426,16 +454,38 @@ public final class CloudNoise {
         return 1f - clamp01((float) Math.sqrt(best) * 1.4f);
     }
 
-    private static float lerp(float a, float b, float t) {
-        return a + (b - a) * t;
+    /** Cloud-sized cells per weather tile (about 154 blocks each in the default style). */
+    private static final int LIFE_CELLS = 40;
+
+    /**
+     * 0.13.0: the life phase at (u, v): each jittered cell has a random phase; the result is the Gaussian-weighted mean
+     * of the nearby cells' phase vectors, so it is a unit vector inside a cell and shrinks across borders. Tiles.
+     */
+    private static float[] lifePhase(float u, float v) {
+        float x = u * LIFE_CELLS;
+        float y = v * LIFE_CELLS;
+        int cx = (int) Math.floor(x);
+        int cy = (int) Math.floor(y);
+        float sc = 0f, ss = 0f, sw = 0f;
+        for (int dy = -1; dy <= 1; dy++) {
+            for (int dx = -1; dx <= 1; dx++) {
+                int nx = cx + dx;
+                int ny = cy + dy;
+                int h = hash(Math.floorMod(nx, LIFE_CELLS), Math.floorMod(ny, LIFE_CELLS), 0, 11);
+                float px = nx + 0.15f + 0.7f * rand01(h) - x;
+                float py = ny + 0.15f + 0.7f * rand01(hash(h, 3, 0, 12)) - y;
+                float w = (float) Math.exp(-(px * px + py * py) / 0.18f);
+                double phase = 2.0 * Math.PI * rand01(hash(h, 7, 0, 13));
+                sc += w * (float) Math.cos(phase);
+                ss += w * (float) Math.sin(phase);
+                sw += w;
+            }
+        }
+        return new float[]{sc / Math.max(sw, 1e-6f), ss / Math.max(sw, 1e-6f)};
     }
 
     private static float remap(float value, float lo, float hi, float newLo, float newHi) {
         return newLo + (value - lo) / Math.max(1e-6f, hi - lo) * (newHi - newLo);
-    }
-
-    private static float clamp01(float v) {
-        return v < 0f ? 0f : (v > 1f ? 1f : v);
     }
 
     private static byte toByte(float v) {

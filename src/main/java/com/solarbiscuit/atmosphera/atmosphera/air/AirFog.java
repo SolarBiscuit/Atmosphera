@@ -1,5 +1,7 @@
 package com.solarbiscuit.atmosphera.atmosphera.air;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.smoothstep;
+
 import com.mojang.blaze3d.shaders.FogShape;
 import com.solarbiscuit.atmosphera.lib.feature.AtmosFeature;
 import com.solarbiscuit.atmosphera.lib.feature.Capability;
@@ -273,10 +275,5 @@ public final class AirFog {
         event.setNearPlaneDistance(Math.min(event.getNearPlaneDistance() * scale, far * scale * 0.9f));
         event.setFarPlaneDistance(far * scale);
         event.setCanceled(true);
-    }
-
-    private static float smoothstep(float a, float b, float x) {
-        float t = Math.max(0f, Math.min(1f, (x - a) / (b - a)));
-        return t * t * (3f - 2f * t);
     }
 }

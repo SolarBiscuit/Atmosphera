@@ -1,5 +1,6 @@
 package com.solarbiscuit.atmosphera.atmosphera.sky;
 
+import com.solarbiscuit.atmosphera.lib.gpu.StreamedImage;
 import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
 import com.solarbiscuit.atmosphera.atmosphera.Atmosphera;
 import com.solarbiscuit.atmosphera.atmosphera.AtmospheraConfig;
@@ -67,17 +68,23 @@ public final class NebulaImages {
     private static final Slot[] SLOT = {new Slot(0), new Slot(1), new Slot(2)};
     private static boolean failedLogged;
 
-    private record Decoded(ByteBuffer pixels, int width, int height, boolean stb, float[] mean) {
-        Decoded(ByteBuffer pixels, int width, int height, boolean stb) {
-            this(pixels, width, height, stb, new float[3]);
+    /** A decoded image (AtmospheraLib's StreamedImage, 0.14.2) with its mean colour. */
+    private static final class Decoded {
+        final StreamedImage.Decoded image;
+        final ByteBuffer pixels;
+        final int width;
+        final int height;
+        final float[] mean = new float[3];
+
+        Decoded(StreamedImage.Decoded image) {
+            this.image = image;
+            this.pixels = image.pixels;
+            this.width = image.width;
+            this.height = image.height;
         }
 
         void free() {
-            if (stb) {
-                STBImage.stbi_image_free(pixels);
-            } else {
-                MemoryUtil.memFree(pixels);
-            }
+            image.free();
         }
     }
 
@@ -256,17 +263,10 @@ public final class NebulaImages {
 
         private void beginUpload(Decoded decoded, int index, Detail detail) {
             freeTexture();
-            texture = GpuResources.texture("Atmosphera nebula " + number);
+            // 0.14.2: AtmospheraLib's image streaming (0.11.0).
+            texture = StreamedImage.allocate("Atmosphera nebula " + number, decoded.image, 9, GL11C.GL_RGB8, GL11C.GL_RGB);
             width = decoded.width;
             height = decoded.height;
-            withTexture(texture, () -> {
-                GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_LINEAR);
-                GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_LINEAR);
-                GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_S, GL12C.GL_CLAMP_TO_EDGE);
-                GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_T, GL12C.GL_CLAMP_TO_EDGE);
-                GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL11C.GL_RGB8, width, height, 0, GL11C.GL_RGB, GL11C.GL_UNSIGNED_BYTE,
-                        (ByteBuffer) null);
-            });
             // RGB8 is padded to four bytes a texel by most drivers; the mip chain adds a third.
             GpuResources.textureBytes(texture, (long) width * height * 4 * 4 / 3);
             uploading = decoded;
@@ -277,36 +277,8 @@ public final class NebulaImages {
 
         private void uploadStrip() {
             Decoded image = uploading;
-            int rows = Math.min(ROWS_PER_FRAME, image.height - uploadedRows);
-            withTexture(texture, () -> {
-                int[] saved = {GL11C.glGetInteger(GL11C.GL_UNPACK_ALIGNMENT), GL11C.glGetInteger(GL11C.GL_UNPACK_ROW_LENGTH),
-                        GL11C.glGetInteger(GL11C.GL_UNPACK_SKIP_ROWS), GL11C.glGetInteger(GL11C.GL_UNPACK_SKIP_PIXELS),
-                        GL11C.glGetInteger(GL21C.GL_PIXEL_UNPACK_BUFFER_BINDING)};
-                GL15C.glBindBuffer(GL21C.GL_PIXEL_UNPACK_BUFFER, 0);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_ALIGNMENT, 1);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_ROW_LENGTH, 0);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_SKIP_ROWS, 0);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_SKIP_PIXELS, 0);
-                // Image rows run top to bottom; the texture's v runs the same way here (the shader flips v).
-                ByteBuffer strip = MemoryUtil.memSlice(image.pixels, uploadedRows * image.width * 3, rows * image.width * 3);
-                GL11C.glTexSubImage2D(GL11C.GL_TEXTURE_2D, 0, 0, uploadedRows, image.width, rows, GL11C.GL_RGB,
-                        GL11C.GL_UNSIGNED_BYTE, strip);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_ALIGNMENT, saved[0]);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_ROW_LENGTH, saved[1]);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_SKIP_ROWS, saved[2]);
-                GL11C.glPixelStorei(GL11C.GL_UNPACK_SKIP_PIXELS, saved[3]);
-                GL15C.glBindBuffer(GL21C.GL_PIXEL_UNPACK_BUFFER, saved[4]);
-                if (uploadedRows + rows >= image.height) {
-                    GL30C.glGenerateMipmap(GL11C.GL_TEXTURE_2D);
-                    GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_LINEAR_MIPMAP_LINEAR);
-                    if (GL.getCapabilities().GL_EXT_texture_filter_anisotropic) {
-                        float max = GL11C.glGetFloat(EXTTextureFilterAnisotropic.GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT);
-                        GL11C.glTexParameterf(GL11C.GL_TEXTURE_2D, EXTTextureFilterAnisotropic.GL_TEXTURE_MAX_ANISOTROPY_EXT,
-                                Math.min(8f, max));
-                    }
-                }
-            });
-            uploadedRows += rows;
+            // Image rows run top to bottom; the texture's v runs the same way here (the shader flips v).
+            uploadedRows += StreamedImage.uploadRows(texture, image.image, uploadedRows, ROWS_PER_FRAME, 9, GL11C.GL_RGB);
             if (uploadedRows >= image.height) {
                 System.arraycopy(image.mean, 0, mean, 0, 3);
                 image.free();
@@ -345,40 +317,14 @@ public final class NebulaImages {
     }
 
     private static Decoded decode(ResourceLocation id, int maxSide) {
-        try {
-            Resource resource = Minecraft.getInstance().getResourceManager().getResource(id).orElse(null);
-            if (resource == null) {
-                return null;
-            }
-            byte[] bytes;
-            try (InputStream in = resource.open()) {
-                bytes = in.readAllBytes();
-            }
-            ByteBuffer file = MemoryUtil.memAlloc(bytes.length);
-            Decoded image;
-            try (MemoryStack stack = MemoryStack.stackPush()) {
-                file.put(bytes).flip();
-                IntBuffer w = stack.mallocInt(1);
-                IntBuffer h = stack.mallocInt(1);
-                IntBuffer comp = stack.mallocInt(1);
-                ByteBuffer pixels = STBImage.stbi_load_from_memory(file, w, h, comp, 3);
-                if (pixels == null) {
-                    Atmosphera.LOGGER.warn("[Atmosphera] Atmosphera could not read the nebula image {}: {}", id, STBImage.stbi_failure_reason());
-                    return null;
-                }
-                image = new Decoded(pixels, w.get(0), h.get(0), true);
-            } finally {
-                MemoryUtil.memFree(file);
-            }
-            while (Math.max(image.width, image.height) > maxSide) {
-                image = halve(image);
-            }
-            meanColour(image);
-            return image;
-        } catch (Throwable e) {
-            Atmosphera.LOGGER.warn("[Atmosphera] Atmosphera could not load the nebula image {}", id, e);
+        StreamedImage.Decoded decoded = StreamedImage.decode(Minecraft.getInstance().getResourceManager(), id, 3, maxSide,
+                Atmosphera.LOGGER, "nebula image");
+        if (decoded == null) {
             return null;
         }
+        Decoded image = new Decoded(decoded);
+        meanColour(image);
+        return image;
     }
 
     /** The mean colour of every 16th texel of every 16th row. */
@@ -398,44 +344,6 @@ public final class NebulaImages {
             image.mean[0] = (float) (r / n / 255.0);
             image.mean[1] = (float) (g / n / 255.0);
             image.mean[2] = (float) (b / n / 255.0);
-        }
-    }
-
-    /** A 2x2 box filter (the detail size; odd edges drop their last row or column). */
-    private static Decoded halve(Decoded in) {
-        int w = Math.max(1, in.width / 2);
-        int h = Math.max(1, in.height / 2);
-        ByteBuffer out = MemoryUtil.memAlloc(w * h * 3);
-        ByteBuffer src = in.pixels;
-        int stride = in.width * 3;
-        for (int y = 0; y < h; y++) {
-            int row0 = (2 * y) * stride;
-            int row1 = Math.min(2 * y + 1, in.height - 1) * stride;
-            for (int x = 0; x < w; x++) {
-                int a = row0 + 6 * x;
-                int b = Math.min(a + 3, row0 + stride - 3);
-                int c = row1 + 6 * x;
-                int d = Math.min(c + 3, row1 + stride - 3);
-                for (int k = 0; k < 3; k++) {
-                    int sum = (src.get(a + k) & 0xFF) + (src.get(b + k) & 0xFF) + (src.get(c + k) & 0xFF) + (src.get(d + k) & 0xFF);
-                    out.put((y * w + x) * 3 + k, (byte) ((sum + 2) >> 2));
-                }
-            }
-        }
-        in.free();
-        return new Decoded(out, w, h, false, in.mean);
-    }
-
-    private static void withTexture(int texture, Runnable body) {
-        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE9);
-        int previous = GL11C.glGetInteger(GL11C.GL_TEXTURE_BINDING_2D);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
-        try {
-            body.run();
-        } finally {
-            GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, previous);
-            GL13C.glActiveTexture(previousUnit);
         }
     }
 

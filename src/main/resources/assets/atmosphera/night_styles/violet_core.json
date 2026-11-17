@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/violet_core.jpg",
+  "width": 4096,
+  "height": 2731,
+  "fov": 85,
+  "tint": [
+    0.0722,
+    0.0828,
+    0.1125
+  ],
+  "exposure": 0.5414,
+  "milky_way": true,
+  "weight": 1.0,
+  "source": "andy-holmes-rCbdp8VCYhQ-unsplash.jpg"
+}

@@ -251,6 +251,8 @@ final class SkyGlsl {
             uniform vec4 u_Twinkle;            // 0.10.0: x smoothed seconds, y amount, z speed
             uniform sampler2D u_MoonMap;       // 0.12.0: NASA LRO near-side map (R8, longitude -90..90 across)
             uniform vec4 u_MoonInfo;           // 0.12.0: x the map's width in texels (0 while loading), y fade-in
+            uniform sampler2D u_Photo;         // 0.14.0: the night sky style's photograph (RGB)
+            uniform vec4 u_PhotoV[4];          // 0.14.0: centre + 1/tan(half long side), long axis + aspect, sky colour + strength, x hide the Milky Way
             uniform mat4 u_InvViewProj;
             uniform vec4 u_SkyCam;    // x camera radius (km), y sun cosine-zenith, z sun azimuth (radians), w exposure
             uniform vec4 u_Sun;       // xyz towards the sun (world), w angular radius (radians)
@@ -316,6 +318,41 @@ final class SkyGlsl {
                 return texture(u_SkyView, vec2(u, v)).rgb;
             }
 
+            // 0.14.0: how much of this pixel the night sky photo covers (set before sky_stars).
+            float sky_photoMask = 0.0;
+
+            // 0.14.0 "Night skies": the style's photograph on the sky dome, a gnomonic patch in the stars' frame (a photo is
+            // a gnomonic projection, so it lies on the dome undistorted), feathered at its edges, most at its bottom (where
+            // the horizon was cut away). rgb: its light (display values), a: coverage.
+            vec4 sky_photo(vec3 c, float pix) {
+                if (u_PhotoV[2].w <= 0.0) {
+                    return vec4(0.0);
+                }
+                vec3 centre = u_PhotoV[0].xyz;
+                float cz = dot(c, centre);
+                if (cz < 0.25) {
+                    return vec4(0.0);
+                }
+                vec3 axis = u_PhotoV[1].xyz;
+                vec2 q = vec2(dot(c, axis), dot(c, cross(centre, axis))) / cz * u_PhotoV[0].w;
+                float ar = abs(u_PhotoV[1].w);
+                vec2 uv = u_PhotoV[1].w > 0.0 ? vec2(0.5 + 0.5 * q.x, 0.5 - 0.5 * q.y / ar)
+                        : vec2(0.5 + 0.5 * q.y / ar, 0.5 - 0.5 * q.x);
+                if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+                    return vec4(0.0);
+                }
+                // A soft ellipse (no straight edges or corners on the dome), lower towards the photo's bottom, where the
+                // horizon was cut away.
+                vec2 e = (uv - 0.5) * 2.0;
+                e.y = e.y > 0.0 ? e.y * 1.25 : e.y;
+                float a = 1.0 - smoothstep(0.35, 1.0, length(e));
+                // Mip level from the pixel's footprint on the photo (pix: radians per pixel).
+                float texels = float(max(textureSize(u_Photo, 0).x, textureSize(u_Photo, 0).y));
+                float lod = log2(max(pix * u_PhotoV[0].w * 0.5 * texels / max(cz * cz, 0.05), 1.0));
+                vec3 rgb = textureLod(u_Photo, uv, lod).rgb * u_PhotoV[2].w;
+                return vec4(rgb, a);
+            }
+
             vec3 sky_stars(vec3 dir, vec3 c, float night, float crowd) {
                 if (night < 0.01 || u_Stars.x <= 0.0 || u_Look2.y <= 0.0) {
                     return vec3(0.0);
@@ -358,7 +395,11 @@ final class SkyGlsl {
                     vec2 suv = vec2(sky_atan2(c.z, c.x) / (2.0 * SKY_PI), c.y) * vec2(3.0, 1.5);
                     float mottle = textureLod(u_Noise, suv, 0.0).a * 0.6 + textureLod(u_Noise, suv * 3.1, 0.0).b * 0.4;
                     milky = vec3(0.55, 0.6, 0.75) * band * smoothstep(0.35, 0.8, mottle) * 0.05;
+                    // 0.14.0: a photo with its own Milky Way hides the drawn one where it lies.
+                    milky *= 1.0 - sky_photoMask * u_PhotoV[3].x;
                 }
+                // 0.14.0: the photo has its own stars; the drawn ones thin inside it.
+                star *= 1.0 - 0.3 * sky_photoMask;
                 float visible = night * smoothstep(-0.02, 0.15, dir.y) * (1.0 - 0.85 * u_Look.z);
                 return (star * u_Stars.x * 0.6 + milky) * visible;
             }
@@ -720,13 +761,20 @@ final class SkyGlsl {
                 float night = 1.0 - smoothstep(-0.18, 0.02, u_Sun.y);
                 if (night > 0.001) {
                     // A uniform branch: by day none of this runs.
-                    vec3 nightSky = vec3(0.010, 0.014, 0.030) * (0.35 + 0.65 * u_MoonPhase.y);
+                    // 0.14.0: a night sky style sets the sky's colour (its photo's edge colour), and lays its photo on it.
+                    vec3 base = u_PhotoV[2].x + u_PhotoV[2].y + u_PhotoV[2].z > 0.0 ? u_PhotoV[2].rgb : vec3(0.010, 0.014, 0.030);
+                    vec3 nightSky = base * (0.35 + 0.65 * u_MoonPhase.y);
                     float above = max(dir.y, 0.0);
                     vec3 airglow = mix(vec3(0.010, 0.016, 0.006), vec3(0.012, 0.008, 0.003), above) * exp(-above * 6.0) * u_Look2.x;
-                    col += (nightSky * (0.6 + 0.4 * (1.0 - above)) + airglow) * night;
                     // Celestial frame: the sky turns with the sun about the world's z axis, as vanilla's sun and stars do
                     // (u_Stars.z, w: cosine and sine of the rotation, from Java).
                     vec3 cel = vec3(dir.x * u_Stars.z + dir.y * u_Stars.w, -dir.x * u_Stars.w + dir.y * u_Stars.z, dir.z);
+                    vec4 photo = sky_photo(cel, mapMode ? 0.05 : u_Fog.w);
+                    // Low on the horizon it fades into the haze; a bright moon washes it out a little.
+                    photo.a *= smoothstep(-0.02, 0.2, dir.y) * (1.0 - 0.85 * u_Look.z);
+                    sky_photoMask = photo.a;
+                    vec3 photoLight = photo.rgb * (1.0 - 0.2 * u_MoonPhase.y);
+                    col += (mix(nightSky * (0.6 + 0.4 * (1.0 - above)), photoLight, photo.a) + airglow) * night;
                     float crowd = 0.0;
                     vec3 nebLight = vec3(0.0);
                     if (u_NebFrame.z > 0.5) {

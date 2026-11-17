@@ -35,9 +35,10 @@ import org.lwjgl.system.MemoryStack;
  */
 public final class HazePass {
     private static AtmosFeature feature;
-    private static int program;
-    private static int[] u;
-    private static boolean failed;
+    /** 0.14.2: the shared post-program holder (AtmospheraLib 0.11.0). */
+    private static final com.solarbiscuit.atmosphera.lib.gpu.PostProgram PROGRAM = new com.solarbiscuit.atmosphera.lib.gpu.PostProgram(Atmosphera.LOGGER, "Atmosphera haze", "Atmosphera haze",
+            () -> GlslPrograms.FULLSCREEN_VERTEX, () -> GlslPrograms.header() + DhBridge.GLSL + HazePass.HAZE,
+            "u_Depth", "atmos_DhDepth", "u_SkyView", "u_InvViewProj", "u_Haze", "u_Sky", "u_FogCol", "u_Forward");
 
     private HazePass() {
     }
@@ -51,7 +52,7 @@ public final class HazePass {
         Minecraft mc = Minecraft.getInstance();
         ClientLevel level = mc.level;
         float amount = AtmospheraConfig.haze.get().floatValue();
-        if (level == null || failed || amount <= 0f || Minecraft.useShaderTransparency()
+        if (level == null || PROGRAM.failed() || amount <= 0f || Minecraft.useShaderTransparency()
                 || level.effects().skyType() != DimensionSpecialEffects.SkyType.NORMAL
                 || mc.gameRenderer.getMainCamera().getFluidInCamera() != FogType.NONE) {
             return;
@@ -60,7 +61,7 @@ public final class HazePass {
         if (!scene.usable()) {
             return;
         }
-        if (program == 0 && !compile()) {
+        if (!PROGRAM.ready()) {
             return;
         }
         long frame = AtmosClient.frame();
@@ -81,17 +82,17 @@ public final class HazePass {
             bind(11, dh);
             int lut = SkyPass.horizonLut();
             bind(13, lut);
-            GL20C.glUseProgram(program);
-            GL20C.glUniform1i(u[0], 12);
-            GL20C.glUniform1i(u[1], 11);
-            GL20C.glUniform1i(u[2], 13);
-            GL20C.glUniformMatrix4fv(u[3], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
-            GL20C.glUniform4f(u[4], half, 96f, lut != 0 ? 1f : 0f, SkyPass.horizonExposure());
-            GL20C.glUniform4f(u[5], SkyPass.sunAzimuth(), SkyPass.horizonAngle(), (float) ctx.camera().y, dh != 0 ? 1f : 0f);
+            GL20C.glUseProgram(PROGRAM.id());
+            GL20C.glUniform1i(PROGRAM.u(0), 12);
+            GL20C.glUniform1i(PROGRAM.u(1), 11);
+            GL20C.glUniform1i(PROGRAM.u(2), 13);
+            GL20C.glUniformMatrix4fv(PROGRAM.u(3), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+            GL20C.glUniform4f(PROGRAM.u(4), half, 96f, lut != 0 ? 1f : 0f, SkyPass.horizonExposure());
+            GL20C.glUniform4f(PROGRAM.u(5), SkyPass.sunAzimuth(), SkyPass.horizonAngle(), (float) ctx.camera().y, dh != 0 ? 1f : 0f);
             float[] fog = RenderSystem.getShaderFogColor();
-            GL20C.glUniform4f(u[6], fog[0], fog[1], fog[2], 0f);
+            GL20C.glUniform4f(PROGRAM.u(6), fog[0], fog[1], fog[2], 0f);
             var look = mc.gameRenderer.getMainCamera().getLookVector();
-            GL20C.glUniform4f(u[7], look.x(), look.y(), look.z(), 0f);
+            GL20C.glUniform4f(PROGRAM.u(7), look.x(), look.y(), look.z(), 0f);
             GL11C.glEnable(GL11C.GL_BLEND);
             GL14C.glBlendFuncSeparate(GL11C.GL_ONE, GL11C.GL_SRC_ALPHA, GL11C.GL_ZERO, GL11C.GL_ONE);
             GlslPrograms.drawFullscreen();
@@ -110,30 +111,9 @@ public final class HazePass {
         GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
     }
 
-    private static boolean compile() {
-        program = GlslPrograms.compile("Atmosphera haze", GlslPrograms.FULLSCREEN_VERTEX,
-                GlslPrograms.header() + DhBridge.GLSL + HAZE);
-        if (program == 0) {
-            failed = true;
-            Atmosphera.LOGGER.error("[Atmosphera] Atmosphera haze is off: its program did not compile (see above)");
-            return false;
-        }
-        String[] names = {"u_Depth", "atmos_DhDepth", "u_SkyView", "u_InvViewProj", "u_Haze", "u_Sky", "u_FogCol",
-                "u_Forward"};
-        u = new int[names.length];
-        for (int i = 0; i < names.length; i++) {
-            u[i] = GL20C.glGetUniformLocation(program, names[i]);
-        }
-        return true;
-    }
-
     /** Frees the program (the lib's shader reload); the next frame rebuilds it. */
     public static void release() {
-        if (program != 0) {
-            GpuResources.deleteProgram(program);
-            program = 0;
-        }
-        failed = false;
+        PROGRAM.release();
     }
 
     static final String HAZE = """

@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/teal_dusk.jpg",
+  "width": 4000,
+  "height": 2820,
+  "fov": 60,
+  "tint": [
+    0.008,
+    0.1199,
+    0.2132
+  ],
+  "exposure": 0.6797,
+  "milky_way": false,
+  "weight": 1.0,
+  "source": "gantavya-bhatt-CB0D4a5-D4Q-unsplash.jpg"
+}

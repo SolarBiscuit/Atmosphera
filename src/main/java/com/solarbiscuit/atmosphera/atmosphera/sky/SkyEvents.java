@@ -1,5 +1,11 @@
 package com.solarbiscuit.atmosphera.atmosphera.sky;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.mix;
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.unit;
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.lerp;
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.clamp01;
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.smoothstep;
+
 import com.solarbiscuit.atmosphera.lib.client.AtmosClient;
 import com.solarbiscuit.atmosphera.lib.wind.AtmosClock;
 import com.solarbiscuit.atmosphera.lib.world.SunSource;
@@ -88,6 +94,11 @@ public final class SkyEvents {
     public static float nebulaTurn;
     private static long lastFrame = -1;
     private static ClientLevel lastLevel;
+
+    /** 0.14.1: the client left a level; drop it (it kept the old world in memory at the title screen). */
+    public static void forgetLevel() {
+        lastLevel = null;
+    }
 
     // Inputs kept for the command's "what it needs" answers.
     private static float sunY;
@@ -592,22 +603,31 @@ public final class SkyEvents {
             for (int k = 0; k < n; k++) {
                 long hk = mix(h + 101L * k);
                 double radius = k == 0 ? r0 : r0 * (0.5 + 0.3 * unit(mix(hk + 5)));
-                double[] centre = null;
-                for (int attempt = 0; attempt < 16 && centre == null; attempt++) {
+                // 0.15.1: plain locals (an array per attempt, every frame of a nebula night).
+                double centreX = 0.0;
+                double centreY = 0.0;
+                double centreZ = 0.0;
+                boolean placed = false;
+                for (int attempt = 0; attempt < 16 && !placed; attempt++) {
                     double az = 2.0 * Math.PI * unit(mix(hk + 20 + attempt));
                     double el = Math.toRadians(35.0 + 45.0 * unit(mix(hk + 40 + attempt)));
-                    double[] cand = {Math.cos(el) * Math.cos(az), Math.sin(el), Math.cos(el) * Math.sin(az)};
+                    double cx = Math.cos(el) * Math.cos(az);
+                    double cy = Math.sin(el);
+                    double cz = Math.cos(el) * Math.sin(az);
                     boolean apart = true;
                     for (int j = 0; j < k; j++) {
-                        double dot = cand[0] * NEB[8 * j] + cand[1] * NEB[8 * j + 1] + cand[2] * NEB[8 * j + 2];
+                        double dot = cx * NEB[8 * j] + cy * NEB[8 * j + 1] + cz * NEB[8 * j + 2];
                         double sep = Math.acos(Math.max(-1.0, Math.min(1.0, dot)));
                         apart &= sep > 1.3 * (radius + NEB[8 * j + 7]);
                     }
                     if (apart) {
-                        centre = cand;
+                        centreX = cx;
+                        centreY = cy;
+                        centreZ = cz;
+                        placed = true;
                     }
                 }
-                if (centre == null) {
+                if (!placed) {
                     break;
                 }
                 // A different image for each.
@@ -625,9 +645,9 @@ public final class SkyEvents {
                     }
                 }
                 int o = 8 * k;
-                NEB[o] = (float) centre[0];
-                NEB[o + 1] = (float) centre[1];
-                NEB[o + 2] = (float) centre[2];
+                NEB[o] = (float) centreX;
+                NEB[o + 1] = (float) centreY;
+                NEB[o + 2] = (float) centreZ;
                 NEB[o + 3] = (float) (1.0 / Math.sin(radius));
                 NEB[o + 4] = (float) Math.cos(Math.min(radius * 1.45, Math.PI * 0.5));
                 NEB[o + 5] = unit(mix(hk + 7)) * 6.2831853f;// the image's turn on the sky
@@ -819,12 +839,6 @@ public final class SkyEvents {
         }
     }
 
-    private static long mix(long z) {
-        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
-        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
-        return z ^ (z >>> 31);
-    }
-
     private static long loggedNebulaDay = Long.MIN_VALUE;
     private static int loggedNebulaKey = -1;
 
@@ -856,22 +870,5 @@ public final class SkyEvents {
                     .append(" (").append(Math.round(Math.toDegrees(NEB[8 * k + 7]) * 2)).append(" degrees across)");
         }
         com.solarbiscuit.atmosphera.atmosphera.Atmosphera.LOGGER.info("[Atmosphera] Atmosphera nebulae tonight: {}", text);
-    }
-
-    private static float unit(long h) {
-        return (h >>> 40) / (float) (1L << 24);
-    }
-
-    private static float lerp(float a, float b, float t) {
-        return a + (b - a) * t;
-    }
-
-    private static float clamp01(float v) {
-        return v < 0f ? 0f : (v > 1f ? 1f : v);
-    }
-
-    private static float smoothstep(float a, float b, float x) {
-        float t = clamp01((x - a) / (b - a));
-        return t * t * (3f - 2f * t);
     }
 }

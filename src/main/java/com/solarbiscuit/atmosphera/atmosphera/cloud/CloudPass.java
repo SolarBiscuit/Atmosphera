@@ -1,5 +1,8 @@
 package com.solarbiscuit.atmosphera.atmosphera.cloud;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.smoothstep;
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.lerp;
+
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.solarbiscuit.atmosphera.lib.client.AtmosClient;
 import com.solarbiscuit.atmosphera.lib.compat.dh.DhBridge;
@@ -457,17 +460,18 @@ public final class CloudPass {
     }
 
     /** The per-frame uniform values (0.2.0: computed once per frame, then only uploaded per program). */
-    private static final float[] V = new float[88];
+    private static final float[] V = new float[96];
     private static final float[] LOW_SUN = new float[3];
     private static final float[] HIGH_SUN = new float[3];
     private static final int V_CAMERA = 0, V_FORWARD = 4, V_DECK = 8, V_TYPE = 12, V_LAYERS = 16, V_SHAPE_OFF = 20,
             V_WEATHER_OFF = 24, V_SCALE = 28, V_BLOCK = 32, V_LIGHT_DIR = 36, V_LIGHT_COL = 40, V_AMB_TOP = 44,
             V_AMB_BOTTOM = 48, V_HAZE = 52, V_TINT = 56, V_MARCH = 60, V_STORM = 64, V_FLASH = 68, V_REGION = 72,
-            V_LOCAL = 76, V_LIGHT_HIGH = 80, V_AMB_SUN = 84;
+            V_LOCAL = 76, V_LIGHT_HIGH = 80, V_AMB_SUN = 84, V_LIFE = 88, V_KINDS = 92;
     private static final int[] V_SLOTS = {Program.CAMERA, Program.FORWARD, Program.DECK, Program.TYPE, Program.LAYERS,
             Program.SHAPE_OFF, Program.WEATHER_OFF, Program.SCALE, Program.BLOCK, Program.LIGHT_DIR, Program.LIGHT_COL,
             Program.AMB_TOP, Program.AMB_BOTTOM, Program.HAZE, Program.TINT, Program.MARCH, Program.STORM,
-            Program.FLASH, Program.REGION_OFF, Program.LOCAL, Program.LIGHT_HIGH, Program.AMB_SUN};
+            Program.FLASH, Program.REGION_OFF, Program.LOCAL, Program.LIGHT_HIGH, Program.AMB_SUN, Program.LIFE,
+            Program.KINDS};
     private static long preparedFrame = -1;
     private static boolean preparedDetail;
 
@@ -503,9 +507,17 @@ public final class CloudPass {
         float thickness = blocky ? style.blockDepth() : CloudWeather.thickness;
         put(V_DECK, CloudWeather.base, Math.max(8f, thickness), CloudWeather.coverage,
                 style.extinction() * AtmospheraConfig.density.get().floatValue());
-        put(V_TYPE, CloudWeather.stratiform, CloudWeather.towers, style.softness(), style.detail());
+        put(V_TYPE, CloudWeather.stratiform, CloudWeather.deckTowers, style.softness(), style.detail());
         put(V_LAYERS, AtmospheraConfig.midHeight.get(), AtmospheraConfig.highHeight.get(),
                 blocky ? 0f : CloudWeather.midCover, blocky ? 0f : CloudWeather.highCover);
+        // 0.13.0 "Cloud life": the life cycle's phase (the same on every client: world time), and the cloud kinds.
+        float lifeSpeed = AtmospheraConfig.lifeSpeed.get().floatValue();
+        double lifeTurn = CloudWeather.lifeFreeze >= 0f ? CloudWeather.lifeFreeze
+                : com.solarbiscuit.atmosphera.lib.wind.AtmosClock.worldSeconds(level, partial) * lifeSpeed / 600.0;
+        double lifeAngle = 2.0 * Math.PI * (lifeTurn - Math.floor(lifeTurn));
+        float lifeOn = blocky || (lifeSpeed <= 0f && CloudWeather.lifeFreeze < 0f) ? 0f : 1f;
+        put(V_LIFE, (float) Math.cos(lifeAngle), (float) Math.sin(lifeAngle), lifeOn, 0.7f);
+        put(V_KINDS, CloudWeather.scShare, CloudWeather.conv, 0f, blocky ? 0f : CloudWeather.ccCover);
 
         // Noise positions: world position minus drift, as a fraction of each tile (double precision here).
         double lowX = camera.x - CloudWeather.lowX;
@@ -546,7 +558,11 @@ public final class CloudPass {
         }
         float sunHigh = Math.max(HIGH_SUN[0], Math.max(HIGH_SUN[1], HIGH_SUN[2]));
         if (sunHigh > 0.02f) {
-            float intensity = 1.15f * overcast;
+            // 0.12.1: the sunlight follows the sky's exposure (a darker sky with clouds as bright as before read as a
+            // white mass round the sun), gently: 85% at the new default, 100% where the old 100% was.
+            float gain = Math.min(1.1f, 0.55f + 0.45f * (float) Math.sqrt(
+                    com.solarbiscuit.atmosphera.atmosphera.sky.SkyPass.exposureRatio()));
+            float intensity = 1.15f * overcast * gain;
             put(V_LIGHT_DIR, sx, sy, sz, 1f);
             put(V_LIGHT_COL, intensity * LOW_SUN[0], intensity * LOW_SUN[1], intensity * LOW_SUN[2], style.forward());
             put(V_LIGHT_HIGH, intensity * HIGH_SUN[0], intensity * HIGH_SUN[1], intensity * HIGH_SUN[2], 0f);
@@ -570,14 +586,20 @@ public final class CloudPass {
             SKY[2] = (float) sky.z;
         }
         float[] fog = RenderSystem.getShaderFogColor();
-        put(V_AMB_TOP, SKY[0] * 0.9f + 0.015f, SKY[1] * 0.9f + 0.017f, SKY[2] * 0.9f + 0.02f, style.ambient());
+        // 0.12.1: under a closed deck the light from above is the deck's own grey, dimmer than a clear sky's blue.
+        float deck = smoothstep(0.6f, 1.0f, CloudWeather.coverage);
+        float skyGrey = 0.2126f * SKY[0] + 0.7152f * SKY[1] + 0.0722f * SKY[2];
+        float ambDim = 1f - 0.3f * deck;
+        put(V_AMB_TOP, (lerp(SKY[0], skyGrey, 0.5f * deck) * 0.9f + 0.015f) * ambDim,
+                (lerp(SKY[1], skyGrey, 0.5f * deck) * 0.9f + 0.017f) * ambDim,
+                (lerp(SKY[2], skyGrey, 0.5f * deck) * 0.9f + 0.02f) * ambDim, style.ambient());
         put(V_AMB_BOTTOM, fog[0] * 0.5f, fog[1] * 0.5f, fog[2] * 0.52f, style.powder());
         put(V_HAZE, fog[0], fog[1], fog[2], CloudWeather.darken);
 
         int rgb = AtmospheraConfig.tint.rgb();
-        float tr = ((rgb >> 16) & 0xFF) / 255f;
-        float tg = ((rgb >> 8) & 0xFF) / 255f;
-        float tb = (rgb & 0xFF) / 255f;
+        float tr = com.solarbiscuit.atmosphera.lib.util.Colors.red(rgb);
+        float tg = com.solarbiscuit.atmosphera.lib.util.Colors.green(rgb);
+        float tb = com.solarbiscuit.atmosphera.lib.util.Colors.blue(rgb);
         if (AtmospheraConfig.levelCloudColor.get()) {
             // Only the hue of the game's cloud colour (vanilla darkens it at night and in rain, which the
             // lighting above already does); Atmospherics' per-biome cloud colours come through here.
@@ -663,9 +685,9 @@ public final class CloudPass {
         shadow = Program.of("Atmosphera cloud shadow map", GlslPrograms.header() + CloudGlsl.SHADOW);
         map = Program.of("Atmosphera cloud map", header + CloudGlsl.MAP);
         if (march == null || resolve == null || composite == null || probe == null || shadow == null) {
-            compileFailed = true;
             Atmosphera.LOGGER.error("[Atmosphera] Atmosphera clouds are off: a cloud program did not compile (see above)");
             release();
+            compileFailed = true;
             return false;
         }
         resolveReproject = PostPasses.locateReproject(resolve.id());
@@ -705,19 +727,12 @@ public final class CloudPass {
             com.solarbiscuit.atmosphera.lib.gpu.GpuResources.deleteFramebuffer(mrtFbo);
             mrtFbo = 0;
         }
+        // 0.15.1: the shader reload tries again (a failed compile or framebuffer kept the clouds off for the session).
+        compileFailed = false;
     }
 
     private static float frac(double v) {
         return (float) (v - Math.floor(v));
-    }
-
-    private static float smoothstep(float a, float b, float x) {
-        float t = Math.max(0f, Math.min(1f, (x - a) / (b - a)));
-        return t * t * (3f - 2f * t);
-    }
-
-    private static float lerp(float a, float b, float t) {
-        return a + (b - a) * t;
     }
 
     /** A program with its uniform locations; the common block's names come first, in this order. */
@@ -726,12 +741,13 @@ public final class CloudPass {
                 "u_Info", "u_Flags", "u_Camera", "u_Forward", "u_Deck", "u_Type", "u_Layers", "u_ShapeOff",
                 "u_WeatherOff", "u_Scale", "u_Block", "u_LightDir", "u_LightCol", "u_AmbTop", "u_AmbBottom", "u_Haze",
                 "u_Tint", "u_Probe0", "u_Probe1", "u_LayerTex", "u_March", "u_Storm", "u_Flash", "u_RegionOff",
-                "u_Local", "u_Region", "u_SkyHz", "u_SkyHzP", "u_Alto", "u_LightColHigh", "u_AmbSun"};
+                "u_Local", "u_Region", "u_SkyHz", "u_SkyHzP", "u_Alto", "u_LightColHigh", "u_AmbSun", "u_Life", "u_Kinds"};
         static final int DEPTH = 0, SHAPE = 1, DETAIL = 2, WEATHER = 3, DH = 4, INV_VIEW_PROJ = 5, INFO = 6, FLAGS = 7,
                 CAMERA = 8, FORWARD = 9, DECK = 10, TYPE = 11, LAYERS = 12, SHAPE_OFF = 13, WEATHER_OFF = 14, SCALE = 15,
                 BLOCK = 16, LIGHT_DIR = 17, LIGHT_COL = 18, AMB_TOP = 19, AMB_BOTTOM = 20, HAZE = 21, TINT = 22,
                 PROBE0 = 23, PROBE1 = 24, LAYER_TEX = 25, MARCH = 26, STORM = 27, FLASH = 28, REGION_OFF = 29,
-                LOCAL = 30, REGION = 31, SKY_HZ = 32, SKY_HZ_P = 33, ALTO = 34, LIGHT_HIGH = 35, AMB_SUN = 36;
+                LOCAL = 30, REGION = 31, SKY_HZ = 32, SKY_HZ_P = 33, ALTO = 34, LIGHT_HIGH = 35, AMB_SUN = 36,
+                LIFE = 37, KINDS = 38;
 
         /** Programs built from {@link CloudGlsl#COMMON} locate the common names; others name their own. */
         static Program of(String name, String fragment, String... uniforms) {
@@ -740,11 +756,7 @@ public final class CloudPass {
                 return null;
             }
             String[] names = uniforms.length > 0 ? uniforms : COMMON;
-            int[] locations = new int[names.length];
-            for (int i = 0; i < names.length; i++) {
-                locations[i] = GL20C.glGetUniformLocation(id, names[i]);
-            }
-            return new Program(id, locations);
+            return new Program(id, com.solarbiscuit.atmosphera.lib.gpu.PostProgram.locate(id, names));
         }
 
         int u(int index) {

@@ -118,20 +118,24 @@ public final class AirData {
                 ids.add(new ResourceLocation(s));
             }
         }
-        int rgb = json.has("fog_color") ? Integer.parseInt(json.get("fog_color").getAsString().replace("#", ""), 16) : 0;
+        // 0.14.2: AtmospheraLib's readers (0.11.0); an unreadable colour is black, an unreadable number its default.
+        int rgb = json.has("fog_color") ? Math.max(0, com.solarbiscuit.atmosphera.lib.util.Colors.parseRgb(
+                json.get("fog_color").getAsString())) : 0;
         JsonObject storm = json.has("storm") && json.get("storm").isJsonObject() ? json.getAsJsonObject("storm") : null;
         int srgb = storm != null && storm.has("fog_color")
-                ? Integer.parseInt(storm.get("fog_color").getAsString().replace("#", ""), 16) : rgb;
+                ? Math.max(0, com.solarbiscuit.atmosphera.lib.util.Colors.parseRgb(storm.get("fog_color").getAsString())) : rgb;
         Profile profile = new Profile(((rgb >> 16) & 0xFF) / 255f, ((rgb >> 8) & 0xFF) / 255f, (rgb & 0xFF) / 255f,
-                f(json, "tint", 0f), Math.max(0.1f, f(json, "fog_distance", 1f)), Math.max(0f, f(json, "haze", 1f)),
-                Math.max(0f, f(json, "mist", 1f)),
+                f(json, "tint", 0f, 0f, 1f), f(json, "fog_distance", 1f, 0.1f, 10f), f(json, "haze", 1f, 0f, 10f),
+                f(json, "mist", 1f, 0f, 10f),
                 ((srgb >> 16) & 0xFF) / 255f, ((srgb >> 8) & 0xFF) / 255f, (srgb & 0xFF) / 255f, storm != null ? 1f : 0f,
-                storm != null ? Math.max(0.05f, f(storm, "fog_distance", 1f)) : 1f,
-                storm != null ? Math.max(0f, f(storm, "haze", 1f)) : 1f);
+                storm != null ? f(storm, "fog_distance", 1f, 0.05f, 10f) : 1f,
+                storm != null ? f(storm, "haze", 1f, 0f, 10f) : 1f);
         return new Entry(ids, tags, json.has("priority") ? json.get("priority").getAsInt() : 0, profile);
     }
 
-    private static float f(JsonObject json, String key, float fallback) {
-        return json.has(key) ? json.get(key).getAsFloat() : fallback;
+    /** 0.15.1: finite and clamped (a negative tint pushed the fog colour below zero; NaN reached the fog). */
+    private static float f(JsonObject json, String key, float fallback, float min, float max) {
+        float v = com.solarbiscuit.atmosphera.lib.util.JsonPresets.f(json, key, fallback);
+        return Float.isFinite(v) ? Math.max(min, Math.min(max, v)) : fallback;
     }
 }

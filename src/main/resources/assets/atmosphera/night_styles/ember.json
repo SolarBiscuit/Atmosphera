@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/ember.jpg",
+  "width": 4096,
+  "height": 1491,
+  "fov": 100,
+  "tint": [
+    0.1289,
+    0.1164,
+    0.1538
+  ],
+  "exposure": 1.0602,
+  "milky_way": true,
+  "weight": 1.0,
+  "source": "zoltan-tasi-b3PuuRU8IPc-unsplash.jpg"
+}

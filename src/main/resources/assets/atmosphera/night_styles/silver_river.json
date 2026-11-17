@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/silver_river.jpg",
+  "width": 2184,
+  "height": 2294,
+  "fov": 70,
+  "tint": [
+    0.0765,
+    0.1052,
+    0.1387
+  ],
+  "exposure": 1.2194,
+  "milky_way": true,
+  "weight": 1.0,
+  "source": "diirn1czb97e1.jpeg"
+}

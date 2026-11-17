@@ -1,0 +1,15 @@
+{
+  "image": "atmosphera:textures/night/amethyst.jpg",
+  "width": 3798,
+  "height": 4096,
+  "fov": 75,
+  "tint": [
+    0.0515,
+    0.0959,
+    0.206
+  ],
+  "exposure": 0.4529,
+  "milky_way": true,
+  "weight": 1.0,
+  "source": "ferenc-horvath-skcFiBu91AA-unsplash.jpg"
+}

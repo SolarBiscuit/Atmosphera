@@ -46,6 +46,8 @@ final class CloudGlsl {
             uniform sampler2D u_SkyHz; // 0.6.5: the sky pass's sky-view table (the horizon's colour by azimuth)
             uniform vec4 u_SkyHzP;     // x sun azimuth, y horizon elevation, z 1 = table bound, w exposure
             uniform vec4 u_Alto;       // 0.8.0: x 1 = the altocumulus is a thin volume, y its depth (blocks), z steps, w extinction
+            uniform vec4 u_Life;       // 0.13.0: xy cos, sin of the life cycle's phase, z on, w less life in sheets
+            uniform vec4 u_Kinds;      // 0.13.0: x stratocumulus share, y convection (towers), z unused, w cirrocumulus cover
 
             const float ATMOSPHERA_BIG = 1e9;
             const float ATMOSPHERA_NEAR_BAND = 2200.0;
@@ -145,6 +147,10 @@ final class CloudGlsl {
             // that saturates to 1, which made solid layers). 0.5.0: the biome of the place, not only the camera's, sets
             // the amount and kind (the deck's mean already holds the camera's), and terrain rising into the wind adds
             // cloud while its lee side thins it.
+            // 0.13.0 "Cloud life": where the last atmosphera_weatherEx sample is in its cloud's life, 0 (dissolved) .. 1
+            // (mature); 0.6 is neutral (cell borders, the life cycle off).
+            float atmosphera_life = 0.6;
+
             vec4 atmosphera_weatherEx(vec2 xz) {
                 vec4 w = textureLod(u_Weather, xz * u_Scale.z + u_WeatherOff.xy, 0.0);
                 float c = u_Deck.z;
@@ -159,6 +165,21 @@ final class CloudGlsl {
                 }
                 // The variation fades out towards 0%, so no amount means no clouds.
                 float lc = clamp(c + (w.r - 0.5) * 1.3 * smoothstep(0.0, 0.25, c), 0.0, 1.0);
+                atmosphera_life = 0.6;
+                if (u_Life.z > 0.0) {
+                    // 0.13.0: each cloud-sized cell has its own phase (weather B, A as a unit vector); turned by the
+                    // world clock it gives the cell's age: it forms quickly, matures and dissolves slowly. The added
+                    // coverage averages out, so the sky as a whole keeps its amount. Storm cells live on while it
+                    // thunders; sheets change less.
+                    vec2 pv = w.ba * 2.0 - 1.0;
+                    float m = smoothstep(0.3, 0.8, length(pv));
+                    vec2 r = vec2(pv.x * u_Life.x - pv.y * u_Life.y, pv.x * u_Life.y + pv.y * u_Life.x);
+                    // Its mean over a cycle is 0.47, so the coverage term subtracts that and averages out.
+                    float env = mix(0.47, smoothstep(-0.55, 0.75, r.x + 0.35 * r.y), m);
+                    float amp = (1.0 - u_Life.w * strat) * (1.0 - 0.7 * u_Storm.x * smoothstep(0.45, 0.75, w.g));
+                    lc = clamp(lc + amp * (env - 0.47) * 0.9 * smoothstep(0.0, 0.25, c), 0.0, 1.0);
+                    atmosphera_life = mix(0.6, env + 0.13, amp);
+                }
                 lc = max(lc, smoothstep(0.9, 1.0, c));
                 return vec4(lc, w.g, strat, lift);
             }
@@ -234,6 +255,8 @@ final class CloudGlsl {
             // low, storm towers reach the top of the deck.
             float atmosphera_profile(float h, float type) {
                 float top = mix(mix(0.32, 0.9, type), 0.65, u_Type.x);
+                // 0.13.0: a growing cloud rises, a dying one sinks (life 0.6 neutral).
+                top *= 1.0 + 0.35 * (atmosphera_life - 0.6) * (1.0 - u_Type.x);
                 top = mix(top, 1.0, u_Type.y * smoothstep(0.3, 0.75, type));
                 // Sheets keep a flatter top than heaped cumulus.
                 float shoulder = mix(0.5, 0.8, u_Type.x);
@@ -274,18 +297,21 @@ final class CloudGlsl {
                 vec2 wt = wx.xy;
                 float lc = wt.x;
                 float strat = wx.z;
-                // 0.5.0 storm features where a storm cell stands (towers in thunder).
-                float cell = u_Storm.x * smoothstep(0.45, 0.75, wt.y);
+                // 0.5.0 storm features where a storm cell stands (towers in thunder). 0.13.0: also where convection builds
+                // ahead of a storm (u_Kinds.y): cumulonimbus with anvils before the first thunder, denser at the base.
+                float convection = max(u_Storm.x, u_Kinds.y);
+                float cell = convection * smoothstep(0.45, 0.75, wt.y);
+                lc = min(1.0, lc + 0.2 * u_Kinds.y * smoothstep(0.45, 0.75, wt.y));
                 float extra = 0.0;
                 float shelf = 0.0;
-                if (u_Storm.x > 0.01 && !atmosphera_cheap) {
-                    if (cell > 0.01 && h > 0.7) {
+                if (convection > 0.01 && !atmosphera_cheap) {
+                    if (cell > 0.3 && h > 0.7) {
                         // Anvil: the tower's top spreads under the deck top, sheared downwind into an overhang.
                         float a = smoothstep(0.72, 0.92, h) * cell;
                         vec2 up = atmosphera_weather(p.xz - u_Storm.yz * a * 900.0);
                         lc = max(lc, clamp(up.x + 0.35 * a, 0.0, 1.0) * smoothstep(0.4, 0.7, up.y + 0.2));
                     }
-                    if (h < 0.22 && cell < 0.5) {
+                    if (u_Storm.x > 0.01 && h < 0.22 && cell < 0.5) {
                         // Shelf cloud: a low dark wedge ahead (downwind) of a storm cell's leading edge.
                         vec2 back = atmosphera_weather(p.xz - u_Storm.yz * 650.0);
                         float storm = u_Storm.x * smoothstep(0.45, 0.75, back.y) * smoothstep(0.5, 0.8, back.x);
@@ -314,6 +340,17 @@ final class CloudGlsl {
                 // Heaped clouds: only shape above (1 - local coverage) survives, so 50% coverage gives separate clouds
                 // with clear sky between them; the style's softness widens the edge.
                 float cum = clamp((shape * prof - (1.0 - lc)) / max(lc + u_Type.z, 1e-3), 0.0, 1.0) * lc;
+                // 0.13.0: stratocumulus, where the type field is low: broad flat-topped cells in rolls across the wind
+                // (cloud streets), softer edged; most after rain, and in cold biomes.
+                float scW = (1.0 - strat) * u_Kinds.x * (1.0 - smoothstep(0.4, 0.7, wt.y));
+                if (scW > 0.01) {
+                    vec2 lw = atmosphera_lowWorld(p.xz);
+                    float roll = 0.5 + 0.5 * sin(dot(lw, vec2(-u_Storm.z, u_Storm.y)) * (6.2831853 / 300.0) + (s.g - 0.5) * 4.0);
+                    float scProf = smoothstep(0.0, 0.05, h) * (1.0 - smoothstep(0.24, 0.32, h));
+                    float sc = clamp((mix(shape, s.g, 0.35) * scProf * mix(0.6, 1.0, roll) - (1.0 - lc))
+                            / max(lc + u_Type.z + 0.2, 1e-3), 0.0, 1.0) * lc;
+                    cum = mix(cum, sc, scW);
+                }
                 // Sheets (rain, cold biomes): a thick grey layer whose base undulates with the shape noise and whose
                 // density varies in patches, instead of flat discs.
                 float sheetBase = smoothstep(0.0, 0.14, h + (shape - 0.5) * 0.18);
@@ -328,7 +365,9 @@ final class CloudGlsl {
                             p.z * u_Scale.y + u_ShapeOff.w), 0.0).r;
                     // Wispy, torn bases; billowing tops.
                     float erode = mix(1.0 - n, n, clamp(h * 3.0, 0.0, 1.0));
-                    d = clamp(atmosphera_remap(d, erode * u_Type.w, 1.0, 0.0, 1.0), 0.0, 1.0);
+                    // 0.13.0: a dissolving cloud frays (more erosion), a growing one is crisp.
+                    float fray = 1.0 + 0.9 * max(0.6 - atmosphera_life, 0.0) - 0.3 * max(atmosphera_life - 0.6, 0.0);
+                    d = clamp(atmosphera_remap(d, erode * u_Type.w * fray, 1.0, 0.0, 1.0), 0.0, 1.0);
                 }
                 return d;
             }
@@ -366,52 +405,29 @@ final class CloudGlsl {
 
             // The blended form at tile coordinates uv (0..1 cloud), and its albedo (neighbouring clumps differ in
             // brightness and thickness).
+            // 0.13.0: the altocumulus redesigned as a smaller cumulus (the four flat forms of 0.1.6 drew stretched streaks
+            // and flat discs): the low deck's 3D shape noise at about 100-block cloudlets, five shape tiles per
+            // altocumulus tile (0.13.0 tuning: eight, about 60-block cloudlets), with rows where the region is undulatus. 0..1 cloudlet shape at height fraction hf.
+            vec4 atmosphera_altoW = vec4(1.0, 0.0, 0.0, 0.0);
+            vec2 atmosphera_altoR = vec2(0.5);
+            float atmosphera_acCells(vec2 uv, float hf, float lod) {
+                vec4 s = textureLod(u_Shape, vec3(uv.x * 8.0, hf * 0.12 + 0.37, uv.y * 8.0), lod);
+                float fbm = s.g * 0.625 + s.b * 0.25 + s.a * 0.125;
+                float shape = clamp(atmosphera_remap(s.r, fbm - 1.0, 1.0, 0.0, 1.0), 0.0, 1.0);
+                if (atmosphera_altoW.y > 0.011) {
+                    float angle = atmosphera_altoR.x * 2.4 + atmosphera_altoR.y * 1.3;
+                    float rows = 0.5 + 0.5 * sin((dot(uv, vec2(cos(angle), sin(angle))) * 30.0 + s.g * 2.0) * 6.2831853);
+                    shape *= mix(1.0, 0.5 + 0.5 * rows, atmosphera_altoW.y);
+                }
+                return shape;
+            }
+
             float atmosphera_altoShape(vec2 uv, float lod, vec2 r, vec4 w, out float albedo) {
-                // 0.2.7: a mid-frequency warp bends the cell lookup, so clumps become irregular lobes, not circles.
-                vec2 warp = (textureLod(u_LayerTex, uv * 2.7 + vec2(0.17, 0.53), lod + 1.4).ar - 0.5) * 0.05;
-                vec2 q = uv + warp;
-                vec4 l = textureLod(u_LayerTex, q, lod);
-                // Two more cell octaves at other scales and angles: clumps are built from sub-clumps (cauliflower
-                // edges), and size, thickness and brightness vary from clump to clump.
-                float c2 = textureLod(u_LayerTex, mat2(0.8, 0.6, -0.6, 0.8) * q * 1.85 + vec2(0.21, 0.67), lod + 0.89).b;
-                float c3 = textureLod(u_LayerTex, mat2(-0.5, 0.87, -0.87, -0.5) * q * 3.4 + vec2(0.71, 0.13), lod + 1.77).b;
-                // Fine fibres fray the edges.
-                float fray = textureLod(u_LayerTex, q * 4.1 + vec2(0.37, 0.91), lod + 2.0).r - 0.5;
-                float sub = mix(0.3, 0.6, r.y);
-                float k = mix(l.b, max(l.b, c2 * 0.95), sub) + (c3 - 0.5) * 0.22 - fray * 0.26;
-                float thick = mix(0.6, 1.4, c2);
-                float d = 0.0;
-                albedo = 0.0;
-                if (w.x > 0.011) {
-                    float big = smoothstep(0.3, 0.7, l.a);
-                    float f = smoothstep(0.40, 0.76, k * mix(1.0, 0.82, big)) * thick;
-                    d += w.x * f;
-                    albedo += w.x * mix(0.8, 1.1, c2);
-                }
-                if (w.y > 0.011) {
-                    // Rows turn and change their spacing from region to region; the warp bends them too.
-                    float angle = r.x * 2.4 + r.y * 1.3;
-                    float rows = mix(30.0, 60.0, r.y);
-                    float phase = dot(q, vec2(cos(angle), sin(angle))) * rows + l.a * 3.0;
-                    float ripple = 0.5 + 0.5 * sin(phase * 6.2831853);
-                    float f = smoothstep(0.34, 0.74, k * (0.55 + 0.45 * ripple)) * mix(0.75, 1.2, c2);
-                    d += w.y * f;
-                    albedo += w.y * mix(0.85, 1.05, c2);
-                }
-                if (w.z > 0.011) {
-                    // Holes where the cells' centres are, frayed; thin, so the sky shows through.
-                    float holes = smoothstep(0.55, 0.85, l.b + fray * 0.3);
-                    d += w.z * (1.0 - holes) * smoothstep(0.3, 0.6, l.a) * 0.6 * mix(0.8, 1.2, c3);
-                    albedo += w.z * 0.95;
-                }
-                if (w.w > 0.011) {
-                    // Long lenses: the slow channel stretched along one direction, warped and frayed.
-                    vec2 luv = mat2(0.6, -0.8, 0.8, 0.6) * q;
-                    float lens = textureLod(u_LayerTex, vec2(luv.x * 0.15, luv.y * 0.6) + vec2(0.4, 0.9), lod).a;
-                    d += w.w * smoothstep(0.56, 0.8, lens - fray * 0.12) * 0.9;
-                    albedo += w.w * 1.05;
-                }
-                return d;
+                atmosphera_altoR = r;
+                atmosphera_altoW = w;
+                float s = atmosphera_acCells(uv, 0.35, lod);
+                albedo = mix(0.85, 1.1, s);
+                return smoothstep(0.42, 0.78, s) * 1.15;
             }
 
             float atmosphera_alto(vec2 xz, float lod, out vec2 uvOut, out vec2 rOut, out vec4 wOut, out float albedo) {
@@ -437,16 +453,9 @@ final class CloudGlsl {
                 return max(log2(max(footprint * tileScale * 512.0, 1.0)) - 0.25, 0.0);
             }
 
-            float atmosphera_hg(float mu, float g) {
-                float g2 = g * g;
-                return (1.0 - g2) / (12.5663706 * pow(max(1.0 + g2 - 2.0 * g * mu, 1e-4), 1.5));
-            }
-
             // ---- 0.8.0: the altocumulus as a thin volume (MEDIUM and HIGH). ----
             // The slowly varying fields are taken once per ray (atmosphera_altoVolume sets them): the region that picks the form,
             // the forms' weights, and the amount (the field, how crowded the region is, the deck's cover).
-            vec2 atmosphera_altoR = vec2(0.5);
-            vec4 atmosphera_altoW = vec4(1.0, 0.0, 0.0, 0.0);
             float atmosphera_altoAmount = 0.0;
             // A per-ray offset that bends the cell lattice (the flat layer warps per sample; per ray it costs one fetch).
             vec2 atmosphera_altoWarp = vec2(0.0);
@@ -459,29 +468,10 @@ final class CloudGlsl {
                 if (hf <= 0.0 || hf >= 1.0) {
                     return 0.0;
                 }
-                vec4 l = textureLod(u_LayerTex, uv, lod);
-                float c2 = textureLod(u_LayerTex, mat2(0.8, 0.6, -0.6, 0.8) * uv * 1.85 + vec2(0.21, 0.67), lod + 0.89).b;
-                vec2 r = atmosphera_altoR;
-                vec4 w = atmosphera_altoW;
-                float k = mix(l.b, max(l.b, c2 * 0.95), mix(0.3, 0.6, r.y));
-                float form = 0.0;
-                if (w.x > 0.011) {
-                    form += w.x * smoothstep(0.16, 0.66, k * mix(1.0, 0.82, smoothstep(0.3, 0.7, l.a))) * mix(0.75, 1.1, c2);
-                }
-                if (w.y > 0.011) {
-                    float angle = r.x * 2.4 + r.y * 1.3;
-                    float phase = dot(uv, vec2(cos(angle), sin(angle))) * mix(30.0, 60.0, r.y) + l.a * 3.0;
-                    form += w.y * smoothstep(0.12, 0.62, k * (0.55 + 0.45 * (0.5 + 0.5 * sin(phase * 6.2831853))));
-                }
-                if (w.z > 0.011) {
-                    form += w.z * (1.0 - smoothstep(0.5, 0.9, l.b)) * smoothstep(0.3, 0.6, l.a) * 0.5;
-                }
-                if (w.w > 0.011) {
-                    vec2 luv = mat2(0.6, -0.8, 0.8, 0.6) * uv;
-                    form += w.w * smoothstep(0.5, 0.82, textureLod(u_LayerTex, vec2(luv.x * 0.15, luv.y * 0.6) + vec2(0.4, 0.9), lod).a) * 0.75;
-                }
-                form *= atmosphera_altoAmount;
-                float d = smoothstep(0.0, 0.22, form * 1.05 - hf) * smoothstep(0.0, 0.12, hf);
+                // 0.13.0: a small cumulus: flat base, rounded top, the amount sets how much of the cell field stands.
+                float cov = atmosphera_altoAmount * 0.55;
+                float prof = smoothstep(0.0, 0.1, hf) * (1.0 - smoothstep(0.45, 1.0, hf));
+                float d = clamp((atmosphera_acCells(uv, hf, lod) * prof - (1.0 - cov)) / max(cov + 0.12, 1e-3), 0.0, 1.0);
                 if (fine && d > 0.0) {
                     float n = textureLod(u_Detail, world * u_Scale.y, 0.0).r;
                     // Torn bases, billowing tops, as on the low deck.
@@ -614,15 +604,30 @@ final class CloudGlsl {
                 // 0.12.0: a wider, lower forward lobe, capped at 6x the even scattering (it was about 27x at the sun, so
                 // thin cloud over the sun burned to white), and less of the sun's light added right where the sky has
                 // already drawn the sun and its glow behind the cloud.
-                float phase = min(mix(0.0795775, 0.6 * atmosphera_hg(mu, 0.7) + 0.25 * atmosphera_hg(mu, 0.3)
-                        + 0.15 * atmosphera_hg(mu, -0.25), u_LightCol.w), 0.4775);
-                float headroom = 1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu);
+                // 0.12.1: a weaker forward lobe, capped at 3x the even scattering (6x lit everything within 25 degrees of
+                // the sun to white: a white mass over a third of the sky round a low sun).
+                float phase = min(mix(0.0795775, 0.45 * atmos_henyeyGreenstein(mu, 0.7) + 0.35 * atmos_henyeyGreenstein(mu, 0.3)
+                        + 0.2 * atmos_henyeyGreenstein(mu, -0.25), u_LightCol.w), 0.24);
+                // 0.12.1: a gentle cut over the sky's glow round the sun (about 25 degrees), which the cloud's light lands
+                // on; the narrow cut right at the sun is gone (behind thick cloud it left a dark disc where the sun is).
+                float headroom = 1.0 - 0.2 * u_LightDir.w * smoothstep(0.9, 1.0, mu);
                 float sunSide = 0.4 + 0.6 * max(mu, 0.0);
                 // 0.12.0: multiple scattering is half even (it was all forward, so looking up at a high sun the whole
                 // deck glowed).
-                float phaseMulti = mix(0.0795775, atmosphera_hg(mu, 0.3), 0.5);
+                float phaseMulti = mix(0.0795775, atmos_henyeyGreenstein(mu, 0.3), 0.5);
                 // 0.2.0 (u_March.z): a third, softer scattering octave lifts deep cumulus cores (hoisted per ray).
-                float phase3 = u_March.z > 0.5 ? atmosphera_hg(mu, 0.1) : 0.0;
+                float phase3 = u_March.z > 0.5 ? atmos_henyeyGreenstein(mu, 0.1) : 0.0;
+                // 0.12.1: the light march reaches about 10 / 80 / 190 blocks (LOW / MEDIUM / HIGH) into a deck up to about
+                // 290 deep; the rest of a closed deck above a sample shades it too (a thick overcast was lit as if thin,
+                // white straight overhead at noon). Estimated from the sample's own density over the deck left above it
+                // along the light, beyond the march's reach; only for a closed deck (broken cumulus are lit from the side).
+                float reach = 10.0 * (pow(2.2, float(u_Info.w)) - 1.0) / 1.2;
+                float slant = 1.0 / max(abs(u_LightDir.y), 0.8);
+                // 0.12.1 tuning: broken cumulus too (their bases read white from below, real ones are grey), less than a
+                // closed deck and up to about three quarters of the deck's height (heaps end below its top).
+                float closedness = smoothstep(0.35, 0.85, u_Deck.z);
+                float closed = u_Deck.w * mix(3.5, 4.0, closedness);
+                float aboveTop = mix(0.9, 1.0, closedness);
                 vec3 light = vec3(0.0);
                 float trans = 1.0;
                 float distSum = 0.0;
@@ -651,10 +656,14 @@ final class CloudGlsl {
                         // Read before the light march, which overwrites it.
                         float shade = 1.0 - 0.85 * atmosphera_shelfShare;
                         vec3 pouch = atmosphera_pouch;
-                        float sigma = d * u_Deck.w;
+                        // 0.12.1 tuning: a closed deck is up to 2.5x as opaque (a thin overcast let the sun's glow through as
+                        // a white sheet straight overhead at noon; real overcast hides the sun).
+                        float sigma = d * u_Deck.w * (1.0 + 1.5 * closedness);
                         float od = atmosphera_lightDepth(p);
                         float h = atmosphera_heightFrac(p);
-                        float beer = exp(-od);
+                        float extra = closed > 0.0
+                                ? d * closed * max((aboveTop - clamp(h, 0.0, 1.0)) * u_Deck.y * slant - reach, 0.0) : 0.0;
+                        float beer = exp(-od - extra);
                         float fill = 1.0;
                         if (pouch.x > 0.0) {
                             // Mammatus: no direct light reaches the base of a storm deck from above, but a low sun shines in
@@ -665,7 +674,7 @@ final class CloudGlsl {
                             // hanging tips catch the light from below and around (as in photographs of mammatus).
                             fill = mix(0.35, 1.5, smoothstep(0.05, 0.8, pouch.y)) * mix(0.75, 1.15, pouch.z);
                         }
-                        float multi = exp(-od * 0.25) * 0.5;
+                        float multi = exp(-od * 0.25 - extra * 0.35) * 0.5;
                         // 0.12.0: powder keeps a third of its darkening towards the sun (it switched off there).
                         float powder = mix(1.0, 1.0 - exp(-od * 2.0 - sigma * 30.0), u_AmbBottom.w * max(0.5 - 0.5 * mu, 0.35));
                         // Rain and storms darken the lower part of the deck (0.1.1: an albedo term, no longer a dimmer on
@@ -742,9 +751,9 @@ final class CloudGlsl {
                 bool fine = u_Flags.x > 0.5 && seg.x < 1800.0;
                 float mu = dot(dir, u_LightDir.xyz);
                 // The forward glow is capped: small bright clumps near the sun read as glitter (0.1.3).
-                float phase = min(mix(0.0795775, 0.75 * atmosphera_hg(mu, 0.55) + 0.25 * atmosphera_hg(mu, -0.2), u_LightCol.w), 0.25);
-                float phaseMulti = atmosphera_hg(mu, 0.3);
-                float headroom = 1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu);
+                float phase = min(mix(0.0795775, 0.75 * atmos_henyeyGreenstein(mu, 0.55) + 0.25 * atmos_henyeyGreenstein(mu, -0.2), u_LightCol.w), 0.25);
+                float phaseMulti = atmos_henyeyGreenstein(mu, 0.3);
+                float headroom = 1.0 - 0.2 * u_LightDir.w * smoothstep(0.9, 1.0, mu);
                 float albedo = 1.0 - 0.6 * u_Haze.w;
                 vec3 light = vec3(0.0);
                 float trans = 1.0;
@@ -805,7 +814,17 @@ final class CloudGlsl {
                 // Path length through a thin layer grows at grazing angles (with curvature, roughly).
                 float slope = max(abs(dir.y + 2.0 * t * dot(dir.xz, dir.xz) * u_Camera.z), 0.06);
                 if (cirrus) {
-                    amount = atmosphera_cirrus(p.xz, atmosphera_sheetLod(t, slope, u_Scale.w));
+                    float clod = atmosphera_sheetLod(t, slope, u_Scale.w);
+                    amount = atmosphera_cirrus(p.xz, clod);
+                    if (u_Kinds.w > 0.01) {
+                        // 0.13.0: cirrocumulus, a mackerel sky: tiny cloudlets in ripples across the wind, in patches.
+                        vec2 cuv = p.xz * u_Scale.w + u_WeatherOff.zw;
+                        float patch = smoothstep(0.4, 0.7, textureLod(u_LayerTex, cuv * 0.27 + vec2(0.61, 0.07), max(clod - 1.9, 0.0)).g);
+                        float cells = textureLod(u_LayerTex, mat2(0.9, 0.43, -0.43, 0.9) * cuv * 2.0 + vec2(0.3, 0.8), clod + 1.0).b;
+                        float ripple = 0.5 + 0.5 * sin(dot(cuv, vec2(-u_Storm.z, u_Storm.y)) * 340.0 + cells * 3.0);
+                        float cc = smoothstep(0.5, 0.78, cells * (0.7 + 0.3 * ripple)) * patch * u_Kinds.w;
+                        amount = max(amount, cc * 0.75);
+                    }
                 } else {
                     vec2 uv;
                     vec2 region;
@@ -834,16 +853,16 @@ final class CloudGlsl {
                     // not darkened by the rain below.
                     // 0.12.0: the lobe capped at 4x the even scattering (it was about 41x at the sun), dimmed by its own
                     // depth, less where the sky has drawn the sun behind it; lit by the high clouds' light colour.
-                    float phase = min(mix(0.0795775, 0.7 * atmosphera_hg(mu, 0.85) + 0.3 * atmosphera_hg(mu, 0.2), u_LightCol.w), 0.318);
-                    float headroom = 1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu);
+                    float phase = min(mix(0.0795775, 0.7 * atmos_henyeyGreenstein(mu, 0.85) + 0.3 * atmos_henyeyGreenstein(mu, 0.2), u_LightCol.w), 0.2);
+                    float headroom = 1.0 - 0.2 * u_LightDir.w * smoothstep(0.9, 1.0, mu);
                     s = u_LightColHigh.rgb * phase * 12.566 * 0.95 * exp(-tau * 0.3) * headroom
                             + u_AmbTop.rgb * u_AmbTop.w * 1.05 + u_AmbSun.rgb * 0.6 * (0.4 + 0.6 * max(mu, 0.0));
                 } else {
                     // Softer forward glow than cirrus, capped: small bright clumps near the sun read as glitter (0.1.3).
-                    float phase = min(mix(0.0795775, 0.75 * atmosphera_hg(mu, 0.55) + 0.25 * atmosphera_hg(mu, -0.2), u_LightCol.w), 0.25);
+                    float phase = min(mix(0.0795775, 0.75 * atmos_henyeyGreenstein(mu, 0.55) + 0.25 * atmos_henyeyGreenstein(mu, -0.2), u_LightCol.w), 0.25);
                     float albedo = (1.0 - 0.6 * u_Haze.w) * altoAlbedo;
                     s = (u_LightColHigh.rgb * phase * 12.566 * 0.85 * exp(-tau * 0.4) * shade
-                            * (1.0 - 0.5 * u_LightDir.w * smoothstep(0.994, 1.0, mu))
+                            * (1.0 - 0.2 * u_LightDir.w * smoothstep(0.9, 1.0, mu))
                             + u_AmbTop.rgb * u_AmbTop.w * 0.9) * albedo;
                 }
                 return vec4(s * alpha, 1.0 - alpha);
@@ -902,7 +921,7 @@ final class CloudGlsl {
                 }
                 float jitter = 0.5;
                 if (u_Flags.y > 0.5) {
-                    jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))
+                    jitter = fract(atmos_ign(gl_FragCoord.xy)
                             + float(u_Info.y) * 0.61803398875);
                 }
 

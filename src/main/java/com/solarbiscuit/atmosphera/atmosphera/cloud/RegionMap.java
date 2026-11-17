@@ -1,5 +1,7 @@
 package com.solarbiscuit.atmosphera.atmosphera.cloud;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.clamp01;
+
 import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
 import com.solarbiscuit.atmosphera.atmosphera.AtmospheraConfig;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -132,33 +134,21 @@ final class RegionMap {
         for (int i = 0; i < SIZE * SIZE; i++) {
             DATA.put(i * 4 + 3, (byte) 0);
         }
-        int previous = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE9);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
         // Tight client-memory unpacking, no pixel-unpack buffer: vanilla (and other mods) leave a row length or a PBO
         // bound, and with them the driver read past this buffer (an access violation in the driver, 0.6.0 test build).
-        com.solarbiscuit.atmosphera.lib.gpu.Uploads.begin(4);
-        try {
-            GL11C.glTexSubImage2D(GL11C.GL_TEXTURE_2D, 0, 0, 0, SIZE, SIZE, GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE, DATA);
-        } finally {
-            com.solarbiscuit.atmosphera.lib.gpu.Uploads.end();
-        }
-        GL13C.glActiveTexture(previous);
+        com.solarbiscuit.atmosphera.lib.gpu.Textures.with2D(9, texture, () -> {
+            com.solarbiscuit.atmosphera.lib.gpu.Uploads.begin(4);
+            try {
+                GL11C.glTexSubImage2D(GL11C.GL_TEXTURE_2D, 0, 0, 0, SIZE, SIZE, GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE, DATA);
+            } finally {
+                com.solarbiscuit.atmosphera.lib.gpu.Uploads.end();
+            }
+        });
     }
 
     private static void create() {
-        texture = GpuResources.texture("Atmosphera region map");
-        int previous = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE9);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_LINEAR);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_LINEAR);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_S, GL12C.GL_CLAMP_TO_EDGE);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_T, GL12C.GL_CLAMP_TO_EDGE);
-        GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL11C.GL_RGBA8, SIZE, SIZE, 0, GL11C.GL_RGBA, GL11C.GL_UNSIGNED_BYTE,
-                (ByteBuffer) null);
-        GL13C.glActiveTexture(previous);
-        GpuResources.textureBytes(texture, (long) SIZE * SIZE * 4);
+        texture = com.solarbiscuit.atmosphera.lib.gpu.Textures.create2D("Atmosphera region map", SIZE, SIZE, GL11C.GL_RGBA8, GL11C.GL_RGBA,
+                GL11C.GL_UNSIGNED_BYTE, GL11C.GL_LINEAR, GL12C.GL_CLAMP_TO_EDGE);
     }
 
     static void release() {
@@ -193,9 +183,5 @@ final class RegionMap {
                 DATA.put((z * SIZE + x) * 4 + ch, (byte) Math.round(v * 255f));
             }
         }
-    }
-
-    private static float clamp01(float v) {
-        return v < 0f ? 0f : (v > 1f ? 1f : v);
     }
 }

@@ -26,9 +26,10 @@ import org.lwjgl.system.MemoryStack;
  * during an eclipse.
  */
 public final class MoonOverlay {
-    private static int program;
-    private static int[] u;
-    private static boolean failed;
+    /** 0.14.2: the shared post-program holder (AtmospheraLib 0.11.0). */
+    private static final com.solarbiscuit.atmosphera.lib.gpu.PostProgram PROGRAM = new com.solarbiscuit.atmosphera.lib.gpu.PostProgram(Atmosphera.LOGGER, "Atmosphera moon tint", "Atmosphera moon tint",
+            () -> GlslPrograms.FULLSCREEN_VERTEX, () -> GlslPrograms.header() + MoonOverlay.TINT_GLSL,
+            "u_InvViewProj", "u_Moon", "u_Tint");
     private static final float[] TINT = new float[3];
 
     private MoonOverlay() {
@@ -44,7 +45,7 @@ public final class MoonOverlay {
 
     private static void render(PostPasses.Context ctx) {
         ClientLevel level = Minecraft.getInstance().level;
-        if (level == null || failed || SkyPass.drawn() || !SunSource.fromSkybox()
+        if (level == null || PROGRAM.failed() || SkyPass.drawn() || !SunSource.fromSkybox()
                 || level.effects().skyType() != DimensionSpecialEffects.SkyType.NORMAL) {
             return;
         }
@@ -53,7 +54,7 @@ public final class MoonOverlay {
             return;
         }
         RenderTargets.Scene scene = RenderTargets.scene();
-        if (!scene.usable() || program == 0 && !compile()) {
+        if (!scene.usable() || !PROGRAM.ready()) {
             return;
         }
         GlStateSnapshot saved = GlStateSnapshot.save();
@@ -61,10 +62,10 @@ public final class MoonOverlay {
             if (!RenderTargets.bindColorOnly(scene)) {
                 return;
             }
-            GL20C.glUseProgram(program);
-            GL20C.glUniformMatrix4fv(u[0], false, ctx.invViewProjection().get(stack.mallocFloat(16)));
-            GL20C.glUniform4f(u[1], -SunSource.dirX(), -SunSource.dirY(), -SunSource.dirZ(), 0f);
-            GL20C.glUniform4f(u[2], TINT[0], TINT[1], TINT[2], 0f);
+            GL20C.glUseProgram(PROGRAM.id());
+            GL20C.glUniformMatrix4fv(PROGRAM.u(0), false, ctx.invViewProjection().get(stack.mallocFloat(16)));
+            GL20C.glUniform4f(PROGRAM.u(1), -SunSource.dirX(), -SunSource.dirY(), -SunSource.dirZ(), 0f);
+            GL20C.glUniform4f(PROGRAM.u(2), TINT[0], TINT[1], TINT[2], 0f);
             GL11C.glDisable(GL11C.GL_DEPTH_TEST);
             GL11C.glDepthMask(false);
             GL11C.glEnable(GL11C.GL_BLEND);
@@ -77,24 +78,9 @@ public final class MoonOverlay {
         }
     }
 
-    private static boolean compile() {
-        program = GlslPrograms.compile("Atmosphera moon tint", GlslPrograms.FULLSCREEN_VERTEX, GlslPrograms.header() + TINT_GLSL);
-        if (program == 0) {
-            failed = true;
-            return false;
-        }
-        u = new int[] {GL20C.glGetUniformLocation(program, "u_InvViewProj"), GL20C.glGetUniformLocation(program, "u_Moon"),
-                GL20C.glGetUniformLocation(program, "u_Tint")};
-        return true;
-    }
-
     /** Frees the program (the lib's shader reload). */
     public static void release() {
-        if (program != 0) {
-            GpuResources.deleteProgram(program);
-            program = 0;
-        }
-        failed = false;
+        PROGRAM.release();
     }
 
     static final String TINT_GLSL = """

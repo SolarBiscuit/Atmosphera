@@ -1,5 +1,7 @@
 package com.solarbiscuit.atmosphera.atmosphera.sky;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.smoothstep;
+
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.solarbiscuit.atmosphera.lib.client.AtmosClient;
 import com.solarbiscuit.atmosphera.lib.feature.AtmosFeature;
@@ -44,8 +46,14 @@ import java.nio.ByteBuffer;
  * model, no GPU readback), so Torrente's reflections, Lumis and Atmosphera's own clouds follow it.
  */
 public final class SkyPass {
-    /** Linear light to display: the exposure at 100% sky brightness (calibrated against vanilla's noon sky). */
-    static final float EXPOSURE = 32f;
+    /**
+     * Linear light to display: the exposure at 100% sky brightness. 0.12.1: 14 (was 32, calibrated against vanilla's
+     * noon sky, which read as a washed-out white third of the sky around the sun); old settings are rescaled once by
+     * 32 / 14 so a saved look is kept.
+     */
+    static final float EXPOSURE = 14f;
+    /** The exposure before 0.12.1 (the one-time conversion's ratio and the clouds' light gain refer to it). */
+    public static final float OLD_EXPOSURE = 32f;
     private static final int TRANS_W = 256, TRANS_H = 64, MS_SIZE = 32, VIEW_W = 192, VIEW_H = 108;
     private static final ResourceLocation PACK_SUN = new ResourceLocation("textures/environment/sun.png");
     private static final ResourceLocation PACK_MOON = new ResourceLocation("textures/environment/moon_phases.png");
@@ -99,6 +107,8 @@ public final class SkyPass {
     private static int skyMapRow;
     private static long skyMapFrame = -1;
     private static final float[] TMP = new float[3];
+    /** 0.15.1: the night sky's base colour (was an array made on every call). */
+    private static final float[] NIGHT_SKY = {0.010f, 0.014f, 0.030f};
     private static boolean eventsUploaded;
 
     private SkyPass() {
@@ -141,12 +151,35 @@ public final class SkyPass {
                 double km = SkyModel.TABLE_HEIGHT + Math.max(0.0, altitude - 63.0) / 1000.0;
                 return SkyModel.sunlight(km, SunSource.dirY(), rgb);
             }
+
+            @Override
+            public boolean dayLight(float[] rgb) {
+                // 0.13.0 (lib 0.10.2): the daytime ice-crystal sights brighten the daylight a little (Lumis adds up to
+                // 15%): a bright halo and sun dogs warm-white, a circumzenithal arc bluish, light pillars the sun's colour.
+                if (SunSource.dirY() <= 0f) {
+                    return false;
+                }
+                float halo = SkyEvents.strength(SkyEvents.Effect.HALO);
+                float dogs = SkyEvents.strength(SkyEvents.Effect.SUN_DOGS);
+                float arc = SkyEvents.strength(SkyEvents.Effect.CIRCUMZENITHAL_ARC);
+                float pillars = SkyEvents.strength(SkyEvents.Effect.LIGHT_PILLARS);
+                float total = 0.5f * halo + 0.6f * dogs + 0.3f * arc + 0.4f * pillars;
+                if (total < 0.01f) {
+                    return false;
+                }
+                rgb[0] = 1.0f * (0.5f * halo + 0.6f * dogs + 0.4f * pillars) + 0.85f * 0.3f * arc;
+                rgb[1] = 0.96f * (0.5f * halo + 0.6f * dogs) + 0.9f * 0.4f * pillars + 0.95f * 0.3f * arc;
+                rgb[2] = 0.9f * (0.5f * halo + 0.6f * dogs) + 0.75f * 0.4f * pillars + 1.1f * 0.3f * arc;
+                return true;
+            }
         });
         com.solarbiscuit.atmosphera.lib.world.SkyView.register(feature,
                 () -> skyMap != 0 && AtmosClient.frame() - skyMapFrame <= 2 ? skyMap : 0);
     }
 
     private static final float[] NEB_MEAN = new float[3];
+    /** 0.14.0: the night sky photo's uniforms (u_PhotoV[4]). */
+    private static final float[] PHOTO_U = new float[16];
     /** 0.10.0: the nebulae's uniforms (u_Neb[12]) and each one's visibility now (its height, faded in above 25 deg). */
     private static final float[] NEB_U = new float[48];
     private static final float[] NEB_VIS = new float[3];
@@ -261,10 +294,9 @@ public final class SkyPass {
         float wet = 1f - 0.6f * rain;
         float night = 1f - smoothstep(-0.18f, 0.02f, sunY);
         float moon = 0.35f + 0.65f * moonBrightness;
-        float[] nightSky = {0.010f * moon * 0.6f, 0.014f * moon * 0.6f, 0.030f * moon * 0.6f};
         for (int c = 0; c < 3; c++) {
             float lum = (grey + (TMP[c] - grey) * wet) * dim;
-            rgb[c] = (float) Math.pow(1.0 - Math.exp(-lum * exposure), 1.0 / 2.2) + nightSky[c] * night;
+            rgb[c] = (float) Math.pow(1.0 - Math.exp(-lum * exposure), 1.0 / 2.2) + NIGHT_SKY[c] * moon * 0.6f * night;
         }
         float sat = AtmospheraConfig.skySaturation.get().floatValue();
         float l = 0.2126f * rgb[0] + 0.7152f * rgb[1] + 0.0722f * rgb[2];
@@ -275,12 +307,22 @@ public final class SkyPass {
     }
 
     /**
-     * The exposure for this sun height: {@link #EXPOSURE} by day, up to 8x as the sun sinks below the horizon (eyes
-     * adapt to twilight; without it the sky went black within 3 degrees and the Belt of Venus never showed).
+     * The exposure for this sun height: {@link #EXPOSURE} by day, more as the sun sinks below the horizon (eyes adapt
+     * to twilight; without it the sky went black within 3 degrees and the Belt of Venus never showed). 0.12.1: the
+     * adaptation starts once the sun has set (it began 1 degree above the horizon, so the glow round a setting sun was
+     * raised up to 1.5x into a white mass); still up to 8x in deep twilight.
      */
     static float exposure(float sunY) {
-        float adapt = 1f + 7f * smoothstep(0.02f, -0.1f, sunY);
+        float adapt = 1f + 7f * smoothstep(-0.01f, -0.12f, sunY);
         return EXPOSURE * adapt * AtmospheraConfig.skyBrightness.get().floatValue();
+    }
+
+    /**
+     * 0.12.1: the daytime exposure against the old fixed one (sky brightness included), so the clouds' sunlight follows
+     * the sky's brightness (lowering only the sky left the sunlit clouds as bright as before, whiter against it).
+     */
+    public static float exposureRatio() {
+        return EXPOSURE * AtmospheraConfig.skyBrightness.get().floatValue() / OLD_EXPOSURE;
     }
 
     /** Whether the sky is drawn here (the overworld's kind of sky, not hidden by thick fog or blindness). */
@@ -365,6 +407,10 @@ public final class SkyPass {
             // 0.12.0: the moon's surface map (unit 9, after the loaders that use 9 as scratch).
             MoonMap.update();
             bind(9, pack ? 0 : MoonMap.texture());
+            // 0.14.0: the night sky's photo on unit 5.
+            NightSky.update(level);
+            bind(5, NightSky.texture());
+            NightSky.uniforms(PHOTO_U);
             int shown = 0;
             java.util.Arrays.fill(NEB_U, 0f);
             float turnCos = (float) Math.cos(SkyEvents.nebulaTurn);
@@ -417,6 +463,8 @@ public final class SkyPass {
             GL20C.glUniform1i(u[24], 8);
             GL20C.glUniform1i(u[29], 9);
             GL20C.glUniform4f(u[30], pack ? 0f : MoonMap.width(), MoonMap.fade(), 0f, 0f);
+            GL20C.glUniform1i(u[31], 5);
+            GL20C.glUniform4fv(u[32], stack.floats(PHOTO_U));
             GL20C.glUniform4fv(u[25], stack.floats(NEB_U));
             GL20C.glUniform4f(u[26], turnCos, turnSin, shown, 0f);
             GL20C.glUniform4f(u[27], pack ? packDisc() : 1f, 0f, 0f, 0f);
@@ -599,11 +647,11 @@ public final class SkyPass {
             compileFailed = true;
             return false;
         }
-        viewU = locate(skyViewProgram, "u_Transmittance", "u_MultiScatter", "u_SkyCam");
-        skyU = locate(skyProgram, "u_Transmittance", "u_SkyView", "u_Noise", "u_PackSun", "u_PackMoon", "u_InvViewProj",
+        viewU = com.solarbiscuit.atmosphera.lib.gpu.PostProgram.locate(skyViewProgram, "u_Transmittance", "u_MultiScatter", "u_SkyCam");
+        skyU = com.solarbiscuit.atmosphera.lib.gpu.PostProgram.locate(skyProgram, "u_Transmittance", "u_SkyView", "u_Noise", "u_PackSun", "u_PackMoon", "u_InvViewProj",
                 "u_SkyCam", "u_Sun", "u_Moon", "u_MoonPhase", "u_Stars", "u_Look", "u_Fog", "u_Time", "u_Look2",
                 "u_Map", "u_CloudMap", "u_Fx", "u_Dog", "u_Pillar", "u_PillarCol", "u_Meteor", "u_Nebula0", "u_Nebula1", "u_Nebula2", "u_Neb", "u_NebFrame", "u_PackDisc", "u_Twinkle",
-                "u_MoonMap", "u_MoonInfo");
+                "u_MoonMap", "u_MoonInfo", "u_Photo", "u_PhotoV");
         eventsUploaded = false;
         transmittance = lut("Atmosphera sky transmittance", TRANS_W, TRANS_H, false);
         multiScatter = lut("Atmosphera sky multiple scattering", MS_SIZE, MS_SIZE, false);
@@ -612,14 +660,6 @@ public final class SkyPass {
         staticLuts = false;
         lutSun = Float.NaN;
         return true;
-    }
-
-    private static int[] locate(int program, String... names) {
-        int[] out = new int[names.length];
-        for (int i = 0; i < names.length; i++) {
-            out[i] = GL20C.glGetUniformLocation(program, names[i]);
-        }
-        return out;
     }
 
     /** Frees programs, tables and the framebuffer; the next frame rebuilds them. */
@@ -639,16 +679,14 @@ public final class SkyPass {
         releaseSkyMap();
         NebulaImages.release();
         MoonMap.release();
+        NightSky.release();
         if (fbo != 0) {
             GpuResources.deleteFramebuffer(fbo);
             fbo = 0;
         }
         staticLuts = false;
         lutSun = Float.NaN;
-    }
-
-    private static float smoothstep(float a, float b, float x) {
-        float t = Math.max(0f, Math.min(1f, (x - a) / (b - a)));
-        return t * t * (3f - 2f * t);
+        // 0.15.1: the shader reload tries again (compile() sets the flag after its own release).
+        compileFailed = false;
     }
 }

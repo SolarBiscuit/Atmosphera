@@ -27,3 +27,6 @@ credits are the pack's to give.
 
 ## Moon map (0.12.0)
 `assets/atmosphera/textures/moon/near_side.jpg`: the near side (longitude -90 to +90 degrees) of the Lunar Reconnaissance Orbiter colour map "lroc_color_poles_8k.tif" from the CGI Moon Kit, converted to greyscale. Credit: NASA's Scientific Visualization Studio (visualizer Ernie Wright, scientist Noah Petro), https://svs.gsfc.nasa.gov/4720/, from data of the LRO camera and laser altimeter teams. NASA imagery is generally not subject to copyright in the United States; see NASA's media usage guidelines.
+
+## Night sky photographs (0.14.0)
+`assets/atmosphera/textures/night/*.jpg`: cropped (ground and trees removed) and resized from photographs supplied by the mod's author, who confirmed the right to use them (2026-11-12). Unsplash photographs (Unsplash License): violet_core by Andy Holmes, amethyst by Ferenc Horvath, teal_dusk by Gantavya Bhatt, electric_blue by Joshua Woroniecki, arch by Nathan Anderson, ember by Zoltan Tasi. silver_river and frost: photographs supplied by the author (source files diirn1czb97e1.jpeg and hls2clq8o8701.jpg). Prepared by tools/nightsky/prep_nightsky.py.

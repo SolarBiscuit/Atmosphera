@@ -32,9 +32,15 @@ public final class Atmosphera {
         }
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
         convertStarAmount();
+        convertSkyBrightness();
         AtmospheraConfig.register();
         CloudPass.register();
         SkyPass.register();
+        // 0.14.1: the left world is let go at once (lib 0.10.3 hook).
+        com.solarbiscuit.atmosphera.lib.client.AtmosClient.onLeaveLevel(() -> {
+            com.solarbiscuit.atmosphera.atmosphera.cloud.CloudWeather.forgetLevel();
+            com.solarbiscuit.atmosphera.atmosphera.sky.SkyEvents.forgetLevel();
+        });
         com.solarbiscuit.atmosphera.atmosphera.air.AirFog.register();
         // 0.9.0: the blood moon on skybox moons; 0.7.0: /atmosphera skyeffect (a client command).
         com.solarbiscuit.atmosphera.atmosphera.sky.MoonOverlay.register();
@@ -53,7 +59,31 @@ public final class Atmosphera {
             e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.air.AirData.Loader());
             e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.sky.NebulaImages.Loader());
             e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.sky.MoonMap.Loader());
+            e.registerReloadListener(new com.solarbiscuit.atmosphera.atmosphera.sky.NightSky.Loader());
         });
+    }
+
+    /**
+     * 0.12.1: the sky's exposure at 100% is 14 (was 32). A file written before 0.12.1 (no {@code brightness_scale}
+     * key) keeps its look: a changed sky brightness v (in the [sky] section only; the clouds' own "brightness" is in
+     * [view]) becomes v * 32 / 14 (at most 400%). The default 100% stays 100%, the new, darker default.
+     */
+    private static void convertSkyBrightness() {
+        // 0.14.2: AtmospheraLib's one-time rewrite (0.11.0).
+        com.solarbiscuit.atmosphera.lib.options.ConfigMigration.Change change =
+                com.solarbiscuit.atmosphera.lib.options.ConfigMigration.rewrite(MOD_ID + "-client.toml", "brightness_scale", "sky",
+                        java.util.regex.Pattern.compile("(?m)^(\\s*brightness\\s*=\\s*)([0-9.eE+-]+)"), value -> {
+                            double old = Double.parseDouble(value);
+                            if (Math.abs(old - 1.0) < 1e-6) {
+                                return null;
+                            }
+                            double now = Math.min(4.0, old * com.solarbiscuit.atmosphera.atmosphera.sky.SkyPass.OLD_EXPOSURE / 14.0);
+                            return String.format(java.util.Locale.ROOT, "%.3f", now);
+                        }, LOGGER, "sky brightness");
+        if (change != null) {
+            LOGGER.info("[Atmosphera] Atmosphera 0.12.1 rescaled the sky brightness: {} is now {} (same look).",
+                    change.before(), change.after());
+        }
     }
 
     /**
@@ -62,32 +92,19 @@ public final class Atmosphera {
      * the new, sparser default. Runs once, before Forge reads the file; Forge then adds {@code star_scale = 2}.
      */
     private static void convertStarAmount() {
-        java.nio.file.Path file = com.solarbiscuit.atmosphera.lib.options.AtmosPaths.file(MOD_ID + "-client.toml");
-        try {
-            if (!java.nio.file.Files.exists(file)) {
-                return;
-            }
-            String text = java.nio.file.Files.readString(file, java.nio.charset.StandardCharsets.UTF_8);
-            if (text.contains("star_scale")) {
-                return;
-            }
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("(?m)^(\\s*star_amount\\s*=\\s*)([0-9.eE+-]+)").matcher(text);
-            if (!m.find()) {
-                return;
-            }
-            double old = Double.parseDouble(m.group(2));
-            if (Math.abs(old - 1.0) < 1e-6) {
-                return;
-            }
-            double now = Math.min(3.0, old / 0.3);
-            String converted = text.substring(0, m.start(2)) + String.format(java.util.Locale.ROOT, "%.3f", now)
-                    + text.substring(m.end(2));
-            java.nio.file.Files.writeString(file, converted, java.nio.charset.StandardCharsets.UTF_8);
+        // 0.14.2: AtmospheraLib's one-time rewrite (0.11.0).
+        com.solarbiscuit.atmosphera.lib.options.ConfigMigration.Change change =
+                com.solarbiscuit.atmosphera.lib.options.ConfigMigration.rewrite(MOD_ID + "-client.toml", "star_scale", null,
+                        java.util.regex.Pattern.compile("(?m)^(\\s*star_amount\\s*=\\s*)([0-9.eE+-]+)"), value -> {
+                            double old = Double.parseDouble(value);
+                            if (Math.abs(old - 1.0) < 1e-6) {
+                                return null;
+                            }
+                            return String.format(java.util.Locale.ROOT, "%.3f", Math.min(3.0, old / 0.3));
+                        }, LOGGER, "star amount");
+        if (change != null) {
             LOGGER.info("[Atmosphera] Atmosphera 0.12.0 rescaled the star amount: {} is now {} (same number of stars).",
-                    old, now);
-        } catch (java.io.IOException | RuntimeException e) {
-            LOGGER.warn("[Atmosphera] Could not convert the star amount in {}: {}", file, e.toString());
+                    change.before(), change.after());
         }
     }
 }

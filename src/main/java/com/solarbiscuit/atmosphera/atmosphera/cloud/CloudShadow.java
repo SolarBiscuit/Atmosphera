@@ -73,25 +73,10 @@ final class CloudShadow {
     }
 
     private static boolean create(int res) {
-        texture = GpuResources.texture("Atmosphera cloud shadow map");
-        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_LINEAR);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_LINEAR);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_S, GL13C.GL_CLAMP_TO_EDGE);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_WRAP_T, GL13C.GL_CLAMP_TO_EDGE);
-        GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL30C.GL_R8, res, res, 0, GL11C.GL_RED, GL11C.GL_UNSIGNED_BYTE,
-                (ByteBuffer) null);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
-        GL13C.glActiveTexture(previousUnit);
-        GpuResources.textureBytes(texture, (long) res * res);
-        framebuffer = GpuResources.framebuffer("Atmosphera cloud shadow map");
-        int previous = GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING);
-        GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, framebuffer);
-        GL30C.glFramebufferTexture2D(GL30C.GL_DRAW_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT0, GL11C.GL_TEXTURE_2D, texture, 0);
-        boolean ok = GL30C.glCheckFramebufferStatus(GL30C.GL_DRAW_FRAMEBUFFER) == GL30C.GL_FRAMEBUFFER_COMPLETE;
-        GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, previous);
+        texture = com.solarbiscuit.atmosphera.lib.gpu.Textures.create2D("Atmosphera cloud shadow map", res, res, GL30C.GL_R8, GL11C.GL_RED,
+                GL11C.GL_UNSIGNED_BYTE, GL11C.GL_LINEAR, GL13C.GL_CLAMP_TO_EDGE);
+        framebuffer = com.solarbiscuit.atmosphera.lib.gpu.Textures.framebuffer("Atmosphera cloud shadow map", texture);
+        boolean ok = framebuffer != 0;
         if (!ok) {
             Atmosphera.LOGGER.error("Atmosphera cloud shadow map framebuffer incomplete; cloud shadows off");
             release();

@@ -92,6 +92,17 @@ public final class AtmospheraConfig {
     public static AtmosOption<com.solarbiscuit.atmosphera.atmosphera.sky.MoonMap.Detail> moonDetail;
     /** 0.12.0: marks a file whose star amount uses the 0.12.0 scale (see Atmosphera.convertStarAmount). */
     public static AtmosOption<Integer> starScale;
+    public static AtmosOption<Integer> skyBrightnessScale;
+    /** 0.13.0 "Cloud life". */
+    public static AtmosOption<Double> lifeSpeed;
+    public static AtmosOption<Double> cirrocumulusAmount;
+    public static AtmosOption<Boolean> forecast;
+    public static AtmosOption<Boolean> towersOutsideThunder;
+    /** 0.14.0 "Night skies". */
+    public static AtmosOption<Boolean> nightStyles;
+    public static AtmosOption<com.solarbiscuit.atmosphera.atmosphera.sky.NightSky.Style> nightStyle;
+    public static AtmosOption<Double> nightStrength;
+    public static AtmosOption<com.solarbiscuit.atmosphera.atmosphera.sky.NightSky.Detail> nightDetail;
     public static AtmosOption<Double> stars;
     public static AtmosOption<Double> starAmount;
     public static AtmosOption<Double> milkyWay;
@@ -154,6 +165,16 @@ public final class AtmospheraConfig {
                 "Altocumulus amount", "How much of the sky the middle layer of rippled cloud covers.");
         cirrusAmount = config.percent("cirrus_amount", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Cirrus amount",
                 "How much of the sky the high, wispy ice clouds cover.");
+        cirrocumulusAmount = config.percent("cirrocumulus_amount", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Cirrocumulus amount",
+                "High rippled fields of tiny cloudlets (a mackerel sky), most often as cirrus thickens before rain.");
+        lifeSpeed = config.percent("life_speed", 1.0, 0.0, 4.0, ChangeTier.LIVE, "Cloud life speed",
+                "Clouds form, grow and dissolve as they drift, each over about 10 minutes at 100% (400%: a time-lapse). "
+                        + "0% keeps every cloud as it is.");
+        forecast = config.toggle("forecast", true, ChangeTier.LIVE, "Clouds follow the forecast",
+                "With Stratos on the server, the sky builds towards the coming weather: cirrus and a mackerel sky, then a "
+                        + "lowering grey deck before rain, towering cumulonimbus before a storm; after rain the deck breaks up.");
+        towersOutsideThunder = config.toggle("towers_outside_thunder", true, ChangeTier.LIVE, "Towers before storms",
+                "Cumulonimbus towers and anvils grow while a storm is coming, not only once it thunders.");
         density = config.percent("density", 0.7, 0.2, 2.0, ChangeTier.LIVE, "Cloud thickness",
                 "How opaque the clouds are (70% by default).");
         weather = config.toggle("follow_weather", true, ChangeTier.LIVE, "Clouds follow the weather",
@@ -251,8 +272,13 @@ public final class AtmospheraConfig {
         sky = config.featureSwitch("enabled", true, "Atmosphera sky",
                 "Replaces vanilla's sky with Atmosphera's: blue overhead, hazy at the horizon, true sunsets and twilight, "
                         + "the Earth's shadow, a starry night. Off under a shaderpack (it draws its own).");
-        skyBrightness = config.percent("brightness", 1.0, 0.5, 2.0, ChangeTier.LIVE, "Sky brightness",
-                "Exposure of the daylight sky.");
+        skyBrightness = config.percent("brightness", 1.0, 0.25, 4.0, ChangeTier.LIVE, "Sky brightness",
+                "Exposure of the daylight sky. (0.12.1: 100% is what about 44% was before; saved settings were "
+                        + "rescaled to keep their look.)");
+        config.fileOnly(true);
+        skyBrightnessScale = config.slider("brightness_scale", 2, 1, 2, 1, ChangeTier.LIVE, "Sky brightness scale",
+                "Atmosphera 0.12.1 changed what the sky brightness means; 2 marks this file as converted. Leave it as it is.");
+        config.fileOnly(false);
         skySaturation = config.percent("saturation", 1.0, 0.0, 1.5, ChangeTier.LIVE, "Sky saturation",
                 "How colourful the sky is. 0% is grey.");
         horizonBlend = config.slider("horizon_blend", 6, 0, 20, 1, ChangeTier.LIVE, "Horizon haze",
@@ -281,6 +307,18 @@ public final class AtmospheraConfig {
         starScale = config.slider("star_scale", 2, 1, 2, 1, ChangeTier.LIVE, "Star amount scale",
                 "Atmosphera 0.12.0 changed what the star amount means; 2 marks this file as converted. Leave it as it is.");
         config.fileOnly(false);
+        nightStyles = config.toggle("night_styles", true, ChangeTier.LIVE, "Night sky styles",
+                "Each night sky has a style from real photographs: violet, blue, teal or ember skies, most with the Milky "
+                        + "Way, rising and setting with the stars. A style lasts 14 to 28 nights (about 21), the same for "
+                        + "everyone on a server. Off: the plain procedural night sky.");
+        nightStyle = config.choice("night_style", com.solarbiscuit.atmosphera.atmosphera.sky.NightSky.Style.AUTO,
+                ChangeTier.LIVE, "Night sky style", "AUTO changes the style every few weeks; or keep one (CLASSIC: the "
+                        + "procedural night sky).");
+        nightStrength = config.percent("night_strength", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Night sky photo strength",
+                "How bright the photograph's sky is.");
+        nightDetail = config.choice("night_detail", com.solarbiscuit.atmosphera.atmosphera.sky.NightSky.Detail.HIGH,
+                ChangeTier.LIVE, "Night sky detail", "Size of the night sky photograph: HIGH 4096 (about 60 MB of video "
+                        + "memory), MEDIUM 2048 (15 MB), LOW 1024.");
         milkyWay = config.percent("milky_way", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Milky Way",
                 "Brightness of the faint band of the galaxy.");
         airglow = config.percent("airglow", 1.0, 0.0, 2.0, ChangeTier.LIVE, "Airglow",

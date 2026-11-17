@@ -1,5 +1,7 @@
 package com.solarbiscuit.atmosphera.atmosphera.cloud;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.mix;
+
 import net.minecraft.client.multiplayer.ClientLevel;
 
 /**
@@ -79,11 +81,5 @@ final class Lightning {
     /** Current flash strength 0..~1.3 (for the lib's cloud cover). */
     static float intensity() {
         return STATE[3];
-    }
-
-    private static long mix(long z) {
-        z = (z ^ (z >>> 30)) * 0xBF58476D1CE4E5B9L;
-        z = (z ^ (z >>> 27)) * 0x94D049BB133111EBL;
-        return z ^ (z >>> 31);
     }
 }

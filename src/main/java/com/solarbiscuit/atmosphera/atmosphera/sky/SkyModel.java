@@ -1,5 +1,7 @@
 package com.solarbiscuit.atmosphera.atmosphera.sky;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.lerp;
+
 /**
  * The Java twin of {@link SkyGlsl}'s atmosphere: the same constants and integrals, run once at start-up into a small
  * table of the sky's light at the zenith and at the horizon by the sun's height. Read each frame for the lib's
@@ -24,10 +26,16 @@ public final class SkyModel {
     private static final int MS_SUN = 32;
     private static final int MS_HEIGHT = 8;
 
-    private static float[] zenith;
-    private static float[] horizon;
-    /** 0.12.0: sunlight (transmittance to the sun) by height ({@link #SUN_HEIGHTS}) and sun cosine-zenith. */
-    private static float[] sunlight;
+    /**
+     * The built tables, published together (0.14.1). They were three plain fields written one after another by the
+     * building thread, so the render thread could see the zenith table (ready) with the horizon or sunlight table
+     * still missing, or arrays whose contents it had not been guaranteed to see.
+     * {@code sunlight} (0.12.0): transmittance to the sun by height ({@link #SUN_HEIGHTS}) and sun cosine-zenith.
+     */
+    private record Tables(float[] zenith, float[] horizon, float[] sunlight) {
+    }
+
+    private static volatile Tables tables;
     /** Heights (km above the ground) of the sunlight table; the clouds use 2 (low deck) and 8 (high clouds). */
     static final double[] SUN_HEIGHTS = {0.2, 1.0, 2.0, 4.0, 8.0, 12.0};
     private static double[] ms;
@@ -74,8 +82,6 @@ public final class SkyModel {
             hz[s * 3 + 1] = (float) acc[1];
             hz[s * 3 + 2] = (float) acc[2];
         }
-        zenith = z;
-        horizon = hz;
         // 0.12.0: sunlight at several heights. The sun is evaluated a disc radius higher (its upper limb), so a height
         // keeps a little light until the whole disc has set there, which also softens the Earth's shadow.
         float[] sl = new float[SUN_HEIGHTS.length * SUN_STEPS * 3];
@@ -90,7 +96,7 @@ public final class SkyModel {
                 sl[at + 2] = (float) out[2];
             }
         }
-        sunlight = sl;
+        tables = new Tables(z, hz, sl);
     }
 
     /**
@@ -100,10 +106,11 @@ public final class SkyModel {
      * Returns false before the tables are built. Any thread.
      */
     public static boolean sunlight(double heightKm, float muS, float[] out) {
-        float[] table = sunlight;
-        if (table == null) {
+        Tables built = tables;
+        if (built == null) {
             return false;
         }
+        float[] table = built.sunlight();
         double hk = Math.max(SUN_HEIGHTS[0], Math.min(SUN_HEIGHTS[SUN_HEIGHTS.length - 1], heightKm));
         int h0 = 0;
         while (h0 < SUN_HEIGHTS.length - 2 && SUN_HEIGHTS[h0 + 1] < hk) {
@@ -116,12 +123,12 @@ public final class SkyModel {
         float lum = 0f;
         float noon = 0f;
         for (int c = 0; c < 3; c++) {
-            float a = mix(table[(h0 * SUN_STEPS + s0) * 3 + c], table[(h0 * SUN_STEPS + s0 + 1) * 3 + c], fs);
-            float b = mix(table[((h0 + 1) * SUN_STEPS + s0) * 3 + c], table[((h0 + 1) * SUN_STEPS + s0 + 1) * 3 + c], fs);
+            float a = lerp(table[(h0 * SUN_STEPS + s0) * 3 + c], table[(h0 * SUN_STEPS + s0 + 1) * 3 + c], fs);
+            float b = lerp(table[((h0 + 1) * SUN_STEPS + s0) * 3 + c], table[((h0 + 1) * SUN_STEPS + s0 + 1) * 3 + c], fs);
             float n0 = table[(h0 * SUN_STEPS + SUN_STEPS - 1) * 3 + c];
             float n1 = table[((h0 + 1) * SUN_STEPS + SUN_STEPS - 1) * 3 + c];
-            float noonC = Math.max(mix(n0, n1, fh), 1e-4f);
-            out[c] = mix(a, b, fh) / noonC;
+            float noonC = Math.max(lerp(n0, n1, fh), 1e-4f);
+            out[c] = lerp(a, b, fh) / noonC;
         }
         lum = 0.2126f * out[0] + 0.7152f * out[1] + 0.0722f * out[2];
         if (lum > 1e-5f) {
@@ -140,22 +147,20 @@ public final class SkyModel {
         return true;
     }
 
-    private static float mix(float a, float b, float t) {
-        return a + (b - a) * t;
-    }
-
     public static boolean ready() {
-        return zenith != null;
+        return tables != null;
     }
 
     /** Linear in-scattered light at the zenith (out[0..2]) for the sun's cosine-zenith. */
     public static void zenith(float muS, float[] out) {
-        lookup(zenith, muS, out);
+        Tables built = tables;
+        lookup(built == null ? null : built.zenith(), muS, out);
     }
 
     /** Linear in-scattered light just above the horizon, averaged around it. */
     public static void horizon(float muS, float[] out) {
-        lookup(horizon, muS, out);
+        Tables built = tables;
+        lookup(built == null ? null : built.horizon(), muS, out);
     }
 
     private static void lookup(float[] table, float muS, float[] out) {

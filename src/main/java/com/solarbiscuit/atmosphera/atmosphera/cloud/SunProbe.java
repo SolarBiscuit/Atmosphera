@@ -1,5 +1,7 @@
 package com.solarbiscuit.atmosphera.atmosphera.cloud;
 
+import static com.solarbiscuit.atmosphera.lib.util.AtmosMath.clamp01;
+
 import com.solarbiscuit.atmosphera.lib.gpu.GpuResources;
 import com.solarbiscuit.atmosphera.lib.wind.AtmosClock;
 import org.lwjgl.opengl.GL11C;
@@ -111,21 +113,10 @@ final class SunProbe {
     }
 
     private static boolean create() {
-        texture = GpuResources.texture("Atmosphera sun cover probe");
-        int previousUnit = GL11C.glGetInteger(GL13C.GL_ACTIVE_TEXTURE);
-        GL13C.glActiveTexture(GL13C.GL_TEXTURE15);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, texture);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MIN_FILTER, GL11C.GL_NEAREST);
-        GL11C.glTexParameteri(GL11C.GL_TEXTURE_2D, GL11C.GL_TEXTURE_MAG_FILTER, GL11C.GL_NEAREST);
-        GL11C.glTexImage2D(GL11C.GL_TEXTURE_2D, 0, GL30C.GL_R32F, 2, 1, 0, GL11C.GL_RED, GL11C.GL_FLOAT, (ByteBuffer) null);
-        GL11C.glBindTexture(GL11C.GL_TEXTURE_2D, 0);
-        GL13C.glActiveTexture(previousUnit);
-        framebuffer = GpuResources.framebuffer("Atmosphera sun cover probe");
-        int previous = GL11C.glGetInteger(GL30C.GL_DRAW_FRAMEBUFFER_BINDING);
-        GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, framebuffer);
-        GL30C.glFramebufferTexture2D(GL30C.GL_DRAW_FRAMEBUFFER, GL30C.GL_COLOR_ATTACHMENT0, GL11C.GL_TEXTURE_2D, texture, 0);
-        boolean ok = GL30C.glCheckFramebufferStatus(GL30C.GL_DRAW_FRAMEBUFFER) == GL30C.GL_FRAMEBUFFER_COMPLETE;
-        GL30C.glBindFramebuffer(GL30C.GL_DRAW_FRAMEBUFFER, previous);
+        texture = com.solarbiscuit.atmosphera.lib.gpu.Textures.create2D("Atmosphera sun cover probe", 2, 1, GL30C.GL_R32F, GL11C.GL_RED, GL11C.GL_FLOAT,
+                GL11C.GL_NEAREST, GL11C.GL_REPEAT);
+        framebuffer = com.solarbiscuit.atmosphera.lib.gpu.Textures.framebuffer("Atmosphera sun cover probe", texture);
+        boolean ok = framebuffer != 0;
         for (int i = 0; i < RING; i++) {
             PBOS[i] = GpuResources.buffer("Atmosphera sun cover readback");
             GL15C.glBindBuffer(GL21C.GL_PIXEL_PACK_BUFFER, PBOS[i]);
@@ -158,9 +149,5 @@ final class SunProbe {
             texture = 0;
         }
         sunCover = moonCover = 0f;
-    }
-
-    private static float clamp01(float v) {
-        return v < 0f ? 0f : (v > 1f ? 1f : v);
     }
 }

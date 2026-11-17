@@ -41,7 +41,62 @@ public final class AtmospheraCommand {
         }
         // "red moon" is the blood moon.
         sky.then(node("red_moon", SkyEvents.Effect.BLOOD_MOON));
-        dispatcher.register(Commands.literal("atmosphera").then(sky));
+        dispatcher.register(Commands.literal("atmosphera").then(sky).then(clouds()));
+    }
+
+    /**
+     * 0.13.0: {@code /atmosphera clouds status}, {@code clouds life <0..1>} (freezes the life cycle at a phase),
+     * {@code clouds life run}, {@code clouds forecast <seconds> <kind>} (fakes a coming spell on this client) and
+     * {@code clouds forecast off}.
+     */
+    private static LiteralArgumentBuilder<CommandSourceStack> clouds() {
+        LiteralArgumentBuilder<CommandSourceStack> clouds = Commands.literal("clouds");
+        clouds.then(Commands.literal("status").executes(ctx -> {
+            String text = com.solarbiscuit.atmosphera.atmosphera.cloud.CloudWeather.describe();
+            ctx.getSource().sendSuccess(() -> Component.literal(text), false);
+            return 1;
+        }));
+        clouds.then(Commands.literal("life")
+                .then(Commands.literal("run").executes(ctx -> {
+                    com.solarbiscuit.atmosphera.atmosphera.cloud.CloudWeather.freezeLife(-1f);
+                    ctx.getSource().sendSuccess(() -> Component.literal("Clouds: the life cycle runs."), false);
+                    return 1;
+                }))
+                .then(Commands.argument("phase", com.mojang.brigadier.arguments.FloatArgumentType.floatArg(0f, 1f))
+                        .executes(ctx -> {
+                            float phase = com.mojang.brigadier.arguments.FloatArgumentType.getFloat(ctx, "phase");
+                            com.solarbiscuit.atmosphera.atmosphera.cloud.CloudWeather.freezeLife(phase);
+                            ctx.getSource().sendSuccess(() -> Component.literal("Clouds: the life cycle is held at "
+                                    + phase + "."), false);
+                            return 1;
+                        })));
+        LiteralArgumentBuilder<CommandSourceStack> forecast = Commands.literal("forecast");
+        forecast.then(Commands.literal("off").executes(ctx -> {
+            com.solarbiscuit.atmosphera.atmosphera.cloud.CloudWeather.fakeForecast(null, 0, null);
+            ctx.getSource().sendSuccess(() -> Component.literal("Clouds: the faked forecast is off."), false);
+            return 1;
+        }));
+        com.mojang.brigadier.builder.RequiredArgumentBuilder<CommandSourceStack, Integer> seconds =
+                Commands.argument("seconds", IntegerArgumentType.integer(0, 3600));
+        for (com.solarbiscuit.atmosphera.lib.world.Weather.Type type : com.solarbiscuit.atmosphera.lib.world.Weather.Type.values()) {
+            if (type == com.solarbiscuit.atmosphera.lib.world.Weather.Type.CLEAR) {
+                continue;
+            }
+            seconds.then(Commands.literal(type.name().toLowerCase(Locale.ROOT)).executes(ctx -> {
+                int s = IntegerArgumentType.getInteger(ctx, "seconds");
+                var level = net.minecraft.client.Minecraft.getInstance().level;
+                if (level == null) {
+                    return 0;
+                }
+                com.solarbiscuit.atmosphera.atmosphera.cloud.CloudWeather.fakeForecast(level, s, type);
+                ctx.getSource().sendSuccess(() -> Component.literal("Clouds: faking " + type.name().toLowerCase(Locale.ROOT)
+                        + " in " + s + " s (this client only)."), false);
+                return 1;
+            }));
+        }
+        forecast.then(seconds);
+        clouds.then(forecast);
+        return clouds;
     }
 
     private static LiteralArgumentBuilder<CommandSourceStack> node(String name, SkyEvents.Effect effect) {
